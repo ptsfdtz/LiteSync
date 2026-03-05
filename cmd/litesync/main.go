@@ -79,8 +79,29 @@ func main() {
 		api.Field{Key: "jobs", Value: len(cfg.Jobs)},
 		api.Field{Key: "startup_provider", Value: startupStatus.Provider},
 		api.Field{Key: "startup_enabled", Value: startupStatus.Enabled},
-		api.Field{Key: "watcher_stub", Value: fmt.Sprintf("%T", watcherSvc)},
+		api.Field{Key: "watcher_impl", Value: fmt.Sprintf("%T", watcherSvc)},
 	)
+
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case event := <-watcherSvc.Events():
+				if err := schedulerSvc.PushEvent(ctx, event); err != nil {
+					logger.Warn(
+						"scheduler rejected file event",
+						api.Field{Key: "job_id", Value: event.JobID},
+						api.Field{Key: "path", Value: event.Path},
+						api.Field{Key: "op", Value: event.Op},
+						api.Field{Key: "error", Value: err.Error()},
+					)
+				}
+			case err := <-watcherSvc.Errors():
+				logger.Warn("watcher runtime error", api.Field{Key: "error", Value: err.Error()})
+			}
+		}
+	}()
 
 	for _, job := range cfg.Jobs {
 		if !job.Enabled {

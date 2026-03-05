@@ -41,6 +41,7 @@ implemented_foundation:
   - config_file_service_bootstrap
   - module_stubs_created
   - initial_full_sync_bootstrap
+  - file_event_watcher_bootstrap
 ```
 
 ## 2. Agent 首次启动流程
