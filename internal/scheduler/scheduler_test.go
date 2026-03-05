@@ -30,6 +30,53 @@ type backupFake struct {
 	maxActive  int
 }
 
+type pendingStoreFake struct {
+	mu   sync.Mutex
+	data map[api.JobID][]api.FileEvent
+}
+
+func newPendingStoreFake() *pendingStoreFake {
+	return &pendingStoreFake{
+		data: make(map[api.JobID][]api.FileEvent),
+	}
+}
+
+func (s *pendingStoreFake) LoadAll() (map[api.JobID][]api.FileEvent, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make(map[api.JobID][]api.FileEvent, len(s.data))
+	for k, v := range s.data {
+		cloned := make([]api.FileEvent, len(v))
+		copy(cloned, v)
+		out[k] = cloned
+	}
+	return out, nil
+}
+
+func (s *pendingStoreFake) Add(event api.FileEvent) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.data[event.JobID] = append(s.data[event.JobID], event)
+	return nil
+}
+
+func (s *pendingStoreFake) Set(jobID api.JobID, events []api.FileEvent) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(events) == 0 {
+		delete(s.data, jobID)
+		return nil
+	}
+	cloned := make([]api.FileEvent, len(events))
+	copy(cloned, events)
+	s.data[jobID] = cloned
+	return nil
+}
+
+func (s *pendingStoreFake) Clear(jobID api.JobID) error {
+	return s.Set(jobID, nil)
+}
+
 func (f *backupFake) SyncNow(_ context.Context, req api.SyncRequest) (api.SyncResult, error) {
 	f.mu.Lock()
 	f.syncNowCalls++
@@ -371,5 +418,39 @@ func TestMultiJobIsolation(t *testing.T) {
 		fake.mu.Lock()
 		defer fake.mu.Unlock()
 		return fake.syncByEventsCalls >= 2
+	})
+}
+
+func TestRecoveryReplayPendingEvents(t *testing.T) {
+	fake := &backupFake{}
+	store := newPendingStoreFake()
+	store.data["job-r"] = []api.FileEvent{
+		{JobID: "job-r", Path: "/tmp/pending.txt", Op: api.FileWrite, OccurredAt: time.Now()},
+	}
+
+	logger := logx.NewWithWriter("debug", io.Discard)
+	d := New(fake, logger)
+	d.EnableRecovery(store)
+	d.ConfigureJobs([]api.Job{
+		{
+			ID: "job-r",
+			Strategy: api.Strategy{
+				EventSync: api.EventSync{DebounceMS: 50},
+			},
+		},
+	})
+
+	if err := d.RegisterJob(context.Background(), "job-r"); err != nil {
+		t.Fatalf("register failed: %v", err)
+	}
+	if err := d.Start(context.Background()); err != nil {
+		t.Fatalf("start failed: %v", err)
+	}
+	defer func() { _ = d.Stop(context.Background()) }()
+
+	waitUntil(t, 2*time.Second, func() bool {
+		fake.mu.Lock()
+		defer fake.mu.Unlock()
+		return fake.syncByEventsCalls >= 1
 	})
 }

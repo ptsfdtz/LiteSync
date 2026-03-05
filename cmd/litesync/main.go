@@ -81,6 +81,7 @@ func main() {
 	backupManager.ReplaceJobs(cfg.Jobs)
 	schedulerSvc := scheduler.New(backupManager, logger)
 	schedulerSvc.ConfigureJobs(cfg.Jobs)
+	schedulerSvc.EnableRecovery(state.NewPendingEventStore(stateDir))
 	watcherSvc := watcher.New()
 	startupSvc := startup.New()
 	stateStore := state.NewFileStore(stateDir)

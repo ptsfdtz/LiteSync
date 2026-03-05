@@ -21,6 +21,15 @@ type Dispatcher struct {
 
 	backup api.BackupManager
 	logger api.Logger
+
+	pendingStore PendingStore
+}
+
+type PendingStore interface {
+	LoadAll() (map[api.JobID][]api.FileEvent, error)
+	Add(event api.FileEvent) error
+	Set(jobID api.JobID, events []api.FileEvent) error
+	Clear(jobID api.JobID) error
 }
 
 type jobConfig struct {
@@ -61,6 +70,12 @@ func New(backup api.BackupManager, logger api.Logger) *Dispatcher {
 		backup:  backup,
 		logger:  logger,
 	}
+}
+
+func (d *Dispatcher) EnableRecovery(store PendingStore) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.pendingStore = store
 }
 
 // ConfigureJobs 读取任务策略并预置调度参数。
@@ -145,6 +160,11 @@ func (d *Dispatcher) PushEvent(ctx context.Context, event api.FileEvent) error {
 	case <-ctx.Done():
 		return ctx.Err()
 	case state.eventCh <- event:
+		if d.pendingStore != nil {
+			if err := d.pendingStore.Add(event); err != nil {
+				d.logger.Warn("persist pending event failed", api.Field{Key: "job_id", Value: event.JobID}, api.Field{Key: "error", Value: err.Error()})
+			}
+		}
 		return nil
 	default:
 		return api.Wrap(api.ErrIOTransient, fmt.Sprintf("scheduler queue full: job_id=%s", event.JobID))
@@ -197,6 +217,27 @@ func (d *Dispatcher) Start(ctx context.Context) error {
 
 	for _, state := range d.jobs {
 		d.startJobLocked(state)
+	}
+
+	if d.pendingStore != nil {
+		all, err := d.pendingStore.LoadAll()
+		if err != nil {
+			d.logger.Warn("load pending events failed", api.Field{Key: "error", Value: err.Error()})
+		} else {
+			for jobID, events := range all {
+				state, ok := d.jobs[jobID]
+				if !ok {
+					continue
+				}
+				for _, event := range events {
+					select {
+					case state.eventCh <- event:
+					default:
+						d.logger.Warn("recover pending event dropped", api.Field{Key: "job_id", Value: jobID})
+					}
+				}
+			}
+		}
 	}
 	return nil
 }
@@ -329,6 +370,11 @@ func (d *Dispatcher) runJob(ctx context.Context, state *jobState) {
 			if len(events) == 0 {
 				continue
 			}
+			if d.pendingStore != nil {
+				if err := d.pendingStore.Set(state.id, events); err != nil {
+					d.logger.Warn("persist event batch failed", api.Field{Key: "job_id", Value: state.id}, api.Field{Key: "error", Value: err.Error()})
+				}
+			}
 			if err := d.runEventSync(ctx, state.id, events); err != nil {
 				d.logger.Error(
 					"event sync failed",
@@ -336,6 +382,12 @@ func (d *Dispatcher) runJob(ctx context.Context, state *jobState) {
 					api.Field{Key: "job_id", Value: state.id},
 					api.Field{Key: "event_count", Value: len(events)},
 				)
+				continue
+			}
+			if d.pendingStore != nil {
+				if err := d.pendingStore.Clear(state.id); err != nil {
+					d.logger.Warn("clear pending event batch failed", api.Field{Key: "job_id", Value: state.id}, api.Field{Key: "error", Value: err.Error()})
+				}
 			}
 		case <-reconcileC:
 			if err := d.runReconcile(ctx, state.id); err != nil {

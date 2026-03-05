@@ -52,6 +52,7 @@ implemented_foundation:
   - multi_job_isolation_bootstrap
   - conflict_policy_handling_bootstrap
   - soft_delete_recycle_bin_bootstrap
+  - pending_event_recovery_replay_bootstrap
 ```
 
 ## 2. Agent 首次启动流程
