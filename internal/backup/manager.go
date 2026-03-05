@@ -22,6 +22,7 @@ type Manager struct {
 	logger api.Logger
 	mu     sync.RWMutex
 	jobs   map[api.JobID]api.Job
+	state  map[api.JobID]api.JobRuntimeState
 
 	copyOp   func(srcPath, dstPath string, srcInfo fs.FileInfo, preservePerm bool) (copyStatus, error)
 	removeOp func(targetPath string) (bool, error)
@@ -32,6 +33,7 @@ func New(logger api.Logger) *Manager {
 	return &Manager{
 		logger: logger,
 		jobs:   make(map[api.JobID]api.Job),
+		state:  make(map[api.JobID]api.JobRuntimeState),
 		copyOp: copyFileWithMode,
 		removeOp: func(targetPath string) (bool, error) {
 			return removePath(targetPath)
@@ -47,6 +49,9 @@ func (m *Manager) ReplaceJobs(jobs []api.Job) {
 	next := make(map[api.JobID]api.Job, len(jobs))
 	for _, job := range jobs {
 		next[job.ID] = job
+		if _, ok := m.state[job.ID]; !ok {
+			m.state[job.ID] = api.JobRuntimeState{JobID: job.ID}
+		}
 	}
 	m.jobs = next
 }
@@ -84,10 +89,12 @@ func (m *Manager) SyncNow(ctx context.Context, req api.SyncRequest) (api.SyncRes
 	err := m.syncFull(ctx, job, &result, runLogger)
 	result.FinishedAt = time.Now()
 	if err != nil {
+		m.recordState(req.JobID, req.Reason, result, err)
 		runLogger.Error("full sync finished with errors", err, summaryFields(result)...)
 		return result, err
 	}
 
+	m.recordState(req.JobID, req.Reason, result, nil)
 	runLogger.Info("full sync completed", summaryFields(result)...)
 	return result, nil
 }
@@ -137,10 +144,12 @@ func (m *Manager) SyncByEvents(ctx context.Context, jobID api.JobID, events []ap
 	result.FinishedAt = time.Now()
 	if len(failed) > 0 {
 		err := api.Wrap(api.ErrIOTransient, fmt.Sprintf("%d incremental operations failed", len(failed)))
+		m.recordState(jobID, reason, result, err)
 		runLogger.Error("incremental sync finished with errors", err, summaryFields(result)...)
 		return result, err
 	}
 
+	m.recordState(jobID, reason, result, nil)
 	runLogger.Info("incremental sync completed", summaryFields(result)...)
 	return result, nil
 }
@@ -158,6 +167,20 @@ func (m *Manager) Reconcile(ctx context.Context, jobID api.JobID) (api.SyncResul
 
 func (m *Manager) Cancel(_ context.Context, _ api.RunID) error {
 	return nil
+}
+
+func (m *Manager) RuntimeSnapshot() api.RuntimeSnapshot {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	snapshot := api.RuntimeSnapshot{
+		GeneratedAt: time.Now(),
+		Jobs:        make([]api.JobRuntimeState, 0, len(m.state)),
+	}
+	for _, st := range m.state {
+		snapshot.Jobs = append(snapshot.Jobs, st)
+	}
+	return snapshot
 }
 
 func (m *Manager) handleIncrementalEvent(
@@ -194,6 +217,25 @@ func (m *Manager) handleIncrementalEvent(
 	default:
 		result.SkippedFiles++
 		return nil
+	}
+}
+
+func (m *Manager) recordState(jobID api.JobID, reason api.TriggerReason, result api.SyncResult, err error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.state[jobID] = api.JobRuntimeState{
+		JobID:         jobID,
+		LastRunID:     result.RunID,
+		LastReason:    string(reason),
+		LastErrorCode: api.ErrorCode(err),
+		StartedAt:     result.StartedAt,
+		FinishedAt:    result.FinishedAt,
+		CopiedFiles:   result.CopiedFiles,
+		UpdatedFiles:  result.UpdatedFiles,
+		DeletedFiles:  result.DeletedFiles,
+		SkippedFiles:  result.SkippedFiles,
+		ConflictCount: result.ConflictCount,
+		ErrorCount:    result.ErrorCount,
 	}
 }
 

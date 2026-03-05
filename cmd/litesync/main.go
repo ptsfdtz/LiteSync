@@ -17,6 +17,7 @@ import (
 	"litesync/internal/logx"
 	"litesync/internal/scheduler"
 	"litesync/internal/startup"
+	"litesync/internal/state"
 	"litesync/internal/watcher"
 )
 
@@ -81,11 +82,11 @@ func main() {
 	schedulerSvc.ConfigureJobs(cfg.Jobs)
 	watcherSvc := watcher.New()
 	startupSvc := startup.New()
+	stateStore := state.NewFileStore(stateDir)
 
 	if err := schedulerSvc.Start(ctx); err != nil {
 		fatal(err)
 	}
-	defer func() { _ = schedulerSvc.Stop(context.Background()) }()
 
 	startupStatus, err := startupSvc.Status(ctx)
 	if err != nil {
@@ -139,6 +140,7 @@ func main() {
 		}
 	}()
 
+	activeJobs := make([]api.JobID, 0, len(cfg.Jobs))
 	for _, job := range cfg.Jobs {
 		if !job.Enabled {
 			logger.Info("skip disabled job", api.Field{Key: "job_id", Value: job.ID})
@@ -153,6 +155,7 @@ func main() {
 		if err := watcherSvc.Start(ctx, job.ID, job.SourceDir); err != nil {
 			logger.Error("start watcher failed", err, api.Field{Key: "job_id", Value: job.ID})
 		}
+		activeJobs = append(activeJobs, job.ID)
 
 		if isInitialFullSync(job) {
 			res, err := backupManager.SyncNow(ctx, api.SyncRequest{
@@ -182,6 +185,25 @@ func main() {
 
 	<-ctx.Done()
 	logger.Info("LiteSync shutting down")
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	for _, jobID := range activeJobs {
+		if err := watcherSvc.Stop(shutdownCtx, jobID); err != nil {
+			logger.Warn("watcher stop failed", api.Field{Key: "job_id", Value: jobID}, api.Field{Key: "error", Value: err.Error()})
+		}
+	}
+	if err := schedulerSvc.Stop(shutdownCtx); err != nil {
+		logger.Warn("scheduler stop failed", api.Field{Key: "error", Value: err.Error()})
+	}
+
+	snapshot := backupManager.RuntimeSnapshot()
+	if err := stateStore.Save(snapshot); err != nil {
+		logger.Warn("save runtime state failed", api.Field{Key: "error", Value: err.Error()})
+	} else {
+		logger.Info("runtime state saved", api.Field{Key: "jobs", Value: len(snapshot.Jobs)}, api.Field{Key: "state_dir", Value: stateDir})
+	}
 }
 
 func isInitialFullSync(job api.Job) bool {

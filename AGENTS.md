@@ -47,6 +47,7 @@ implemented_foundation:
   - logging_persistence_and_error_codes_bootstrap
   - startup_service_cross_platform_bootstrap
   - periodic_reconcile_bootstrap
+  - graceful_shutdown_and_runtime_state_bootstrap
 ```
 
 ## 2. Agent 首次启动流程

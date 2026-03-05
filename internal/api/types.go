@@ -68,3 +68,23 @@ type Field struct {
 	Key   string
 	Value any
 }
+
+type JobRuntimeState struct {
+	JobID         JobID     `json:"job_id"`
+	LastRunID     RunID     `json:"last_run_id"`
+	LastReason    string    `json:"last_reason"`
+	LastErrorCode string    `json:"last_error_code"`
+	StartedAt     time.Time `json:"started_at"`
+	FinishedAt    time.Time `json:"finished_at"`
+	CopiedFiles   uint64    `json:"copied_files"`
+	UpdatedFiles  uint64    `json:"updated_files"`
+	DeletedFiles  uint64    `json:"deleted_files"`
+	SkippedFiles  uint64    `json:"skipped_files"`
+	ConflictCount uint64    `json:"conflict_count"`
+	ErrorCount    uint64    `json:"error_count"`
+}
+
+type RuntimeSnapshot struct {
+	GeneratedAt time.Time         `json:"generated_at"`
+	Jobs        []JobRuntimeState `json:"jobs"`
+}

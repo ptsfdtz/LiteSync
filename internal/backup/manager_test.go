@@ -324,6 +324,57 @@ func TestIncrementalSyncJobNotFound(t *testing.T) {
 	}
 }
 
+func TestRuntimeSnapshotUpdatedAfterSync(t *testing.T) {
+	src := t.TempDir()
+	dst := t.TempDir()
+
+	job := api.Job{
+		ID:        "job-state",
+		Enabled:   true,
+		SourceDir: src,
+		TargetDir: dst,
+		Strategy: api.Strategy{
+			InitialSync:         "full",
+			DeletePolicy:        "propagate",
+			PreservePermissions: true,
+		},
+	}
+
+	mustWriteFile(t, filepath.Join(src, "a.txt"), "hello")
+	logger := logx.NewWithWriter("debug", io.Discard)
+	m := New(logger)
+	m.ReplaceJobs([]api.Job{job})
+
+	if _, err := m.SyncNow(context.Background(), api.SyncRequest{
+		JobID:       job.ID,
+		Reason:      api.TriggerStartup,
+		Mode:        api.SyncModeFull,
+		RequestedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("sync failed: %v", err)
+	}
+
+	snapshot := m.RuntimeSnapshot()
+	if len(snapshot.Jobs) == 0 {
+		t.Fatalf("expected runtime states")
+	}
+	found := false
+	for _, st := range snapshot.Jobs {
+		if st.JobID == job.ID {
+			found = true
+			if st.LastErrorCode != "OK" {
+				t.Fatalf("expected OK error code, got %s", st.LastErrorCode)
+			}
+			if st.LastRunID == "" {
+				t.Fatalf("expected run id")
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("job state not found")
+	}
+}
+
 func mustWriteFile(t *testing.T, path string, content string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
