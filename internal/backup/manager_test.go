@@ -479,6 +479,45 @@ func TestConflictPolicyBackupThenOverwrite(t *testing.T) {
 	}
 }
 
+func TestDeletePolicySoftDelete(t *testing.T) {
+	src := t.TempDir()
+	dst := t.TempDir()
+
+	job := api.Job{
+		ID:        "job-soft-delete",
+		Enabled:   true,
+		SourceDir: src,
+		TargetDir: dst,
+		Strategy: api.Strategy{
+			DeletePolicy:        "soft_delete",
+			ConflictPolicy:      "overwrite",
+			PreservePermissions: true,
+		},
+	}
+
+	targetFile := filepath.Join(dst, "to-delete.txt")
+	mustWriteFile(t, targetFile, "old")
+
+	logger := logx.NewWithWriter("debug", io.Discard)
+	m := New(logger)
+	m.nowFn = func() time.Time { return time.Date(2026, 3, 5, 16, 0, 0, 0, time.UTC) }
+	m.ReplaceJobs([]api.Job{job})
+
+	res, err := m.SyncByEvents(context.Background(), job.ID, []api.FileEvent{
+		{JobID: job.ID, Path: filepath.Join(src, "to-delete.txt"), Op: api.FileRemove, OccurredAt: time.Now()},
+	}, api.TriggerFileEvent)
+	if err != nil {
+		t.Fatalf("soft delete sync failed: %v", err)
+	}
+	if res.DeletedFiles == 0 {
+		t.Fatalf("expected deleted files > 0")
+	}
+	assertFileNotExists(t, targetFile)
+
+	recycleFile := filepath.Join(dst, ".litesync_trash", "20260305-160000", "to-delete.txt")
+	assertFileExists(t, recycleFile)
+}
+
 func mustWriteFile(t *testing.T, path string, content string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {

@@ -51,6 +51,7 @@ implemented_foundation:
   - background_command_control_bootstrap
   - multi_job_isolation_bootstrap
   - conflict_policy_handling_bootstrap
+  - soft_delete_recycle_bin_bootstrap
 ```
 
 ## 2. Agent 首次启动流程

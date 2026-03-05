@@ -268,8 +268,25 @@ func (m *Manager) applyDelete(
 			result.SkippedFiles++
 		}
 		return nil
-	case "ignore", "soft_delete":
+	case "ignore":
 		result.SkippedFiles++
+		return nil
+	case "soft_delete":
+		var moved bool
+		err := m.withRetry(ctx, 3, 120*time.Millisecond, func() error {
+			var opErr error
+			moved, opErr = m.moveToRecycleBin(targetPath, relPath, job.TargetDir)
+			return opErr
+		})
+		if err != nil {
+			logger.Warn("soft delete failed", api.Field{Key: "path", Value: relPath}, api.Field{Key: "error", Value: err.Error()})
+			return err
+		}
+		if moved {
+			result.DeletedFiles++
+		} else {
+			result.SkippedFiles++
+		}
 		return nil
 	default:
 		result.SkippedFiles++
@@ -708,6 +725,47 @@ func removePath(targetPath string) (bool, error) {
 		return false, err
 	}
 	return true, nil
+}
+
+func (m *Manager) moveToRecycleBin(targetPath, relPath, targetRoot string) (bool, error) {
+	_, err := os.Stat(targetPath)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+
+	ts := m.nowFn().Format("20060102-150405")
+	recyclePath := filepath.Join(targetRoot, ".litesync_trash", ts, filepath.FromSlash(relPath))
+	if err := os.MkdirAll(filepath.Dir(recyclePath), 0o755); err != nil {
+		return false, err
+	}
+	if err := os.Rename(targetPath, recyclePath); err != nil {
+		// 跨分区 rename 失败时回退为复制+删除。
+		if copyErr := copyPath(targetPath, recyclePath); copyErr != nil {
+			return false, err
+		}
+		if err := os.RemoveAll(targetPath); err != nil {
+			return false, err
+		}
+	}
+	return true, nil
+}
+
+func copyPath(srcPath, dstPath string) error {
+	info, err := os.Stat(srcPath)
+	if err != nil {
+		return err
+	}
+	if info.IsDir() {
+		return copyDir(srcPath, dstPath)
+	}
+	if err := os.MkdirAll(filepath.Dir(dstPath), 0o755); err != nil {
+		return err
+	}
+	_, err = copyFileWithMode(srcPath, dstPath, info, true)
+	return err
 }
 
 func sameFileState(src fs.FileInfo, dst fs.FileInfo) bool {
