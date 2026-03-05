@@ -21,9 +21,10 @@ type backupFake struct {
 	lastEvents        []api.FileEvent
 	lastSyncNowMode   api.SyncMode
 
-	syncByEventsErr error
-	blockEventsCh   chan struct{}
-	firstEventRunCh chan struct{}
+	syncByEventsErr      error
+	syncByEventsErrByJob map[api.JobID]error
+	blockEventsCh        chan struct{}
+	firstEventRunCh      chan struct{}
 
 	activeRuns int
 	maxActive  int
@@ -51,6 +52,11 @@ func (f *backupFake) SyncByEvents(_ context.Context, jobID api.JobID, events []a
 	}
 	blockCh := f.blockEventsCh
 	err := f.syncByEventsErr
+	if f.syncByEventsErrByJob != nil {
+		if byJobErr, ok := f.syncByEventsErrByJob[jobID]; ok {
+			err = byJobErr
+		}
+	}
 	f.mu.Unlock()
 
 	if blockCh != nil {
@@ -315,5 +321,55 @@ func TestPeriodicReconcile(t *testing.T) {
 		fake.mu.Lock()
 		defer fake.mu.Unlock()
 		return fake.reconcileCalls >= 1
+	})
+}
+
+func TestMultiJobIsolation(t *testing.T) {
+	fake := &backupFake{
+		syncByEventsErrByJob: map[api.JobID]error{
+			"job-a": api.ErrIOTransient,
+		},
+	}
+	logger := logx.NewWithWriter("debug", io.Discard)
+	d := New(fake, logger)
+
+	d.ConfigureJobs([]api.Job{
+		{
+			ID: "job-a",
+			Strategy: api.Strategy{
+				EventSync: api.EventSync{DebounceMS: 60},
+			},
+		},
+		{
+			ID: "job-b",
+			Strategy: api.Strategy{
+				EventSync: api.EventSync{DebounceMS: 60},
+			},
+		},
+	})
+
+	if err := d.Start(context.Background()); err != nil {
+		t.Fatalf("start failed: %v", err)
+	}
+	defer func() { _ = d.Stop(context.Background()) }()
+
+	if err := d.RegisterJob(context.Background(), "job-a"); err != nil {
+		t.Fatalf("register job-a failed: %v", err)
+	}
+	if err := d.RegisterJob(context.Background(), "job-b"); err != nil {
+		t.Fatalf("register job-b failed: %v", err)
+	}
+
+	if err := d.PushEvent(context.Background(), api.FileEvent{JobID: "job-a", Path: "/tmp/a.txt", Op: api.FileWrite}); err != nil {
+		t.Fatalf("push event job-a failed: %v", err)
+	}
+	if err := d.PushEvent(context.Background(), api.FileEvent{JobID: "job-b", Path: "/tmp/b.txt", Op: api.FileWrite}); err != nil {
+		t.Fatalf("push event job-b failed: %v", err)
+	}
+
+	waitUntil(t, 2*time.Second, func() bool {
+		fake.mu.Lock()
+		defer fake.mu.Unlock()
+		return fake.syncByEventsCalls >= 2
 	})
 }
