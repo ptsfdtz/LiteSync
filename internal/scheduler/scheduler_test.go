@@ -17,6 +17,7 @@ type backupFake struct {
 
 	syncByEventsCalls int
 	syncNowCalls      int
+	reconcileCalls    int
 	lastEvents        []api.FileEvent
 	lastSyncNowMode   api.SyncMode
 
@@ -68,7 +69,10 @@ func (f *backupFake) SyncByEvents(_ context.Context, jobID api.JobID, events []a
 }
 
 func (f *backupFake) Reconcile(_ context.Context, jobID api.JobID) (api.SyncResult, error) {
-	return api.SyncResult{JobID: jobID}, api.ErrNotImplemented
+	f.mu.Lock()
+	f.reconcileCalls++
+	f.mu.Unlock()
+	return api.SyncResult{JobID: jobID}, nil
 }
 
 func (f *backupFake) Cancel(_ context.Context, _ api.RunID) error {
@@ -270,4 +274,46 @@ func TestTriggerNowJobNotFound(t *testing.T) {
 	if !errors.Is(err, api.ErrJobNotFound) {
 		t.Fatalf("expected job not found error, got %v", err)
 	}
+}
+
+func TestPeriodicReconcile(t *testing.T) {
+	fake := &backupFake{}
+	logger := logx.NewWithWriter("debug", io.Discard)
+	d := New(fake, logger)
+
+	d.ConfigureJobs([]api.Job{
+		{
+			ID: "job-rc",
+			Strategy: api.Strategy{
+				EventSync: api.EventSync{DebounceMS: 50},
+				PeriodicReconcile: api.PeriodicReconcile{
+					Enabled:         true,
+					IntervalMinutes: 0,
+				},
+			},
+		},
+	})
+
+	if err := d.RegisterJob(context.Background(), "job-rc"); err != nil {
+		t.Fatalf("register failed: %v", err)
+	}
+
+	// Override interval to keep test short.
+	d.mu.Lock()
+	if st, ok := d.jobs["job-rc"]; ok {
+		st.reconcileEnabled = true
+		st.reconcileEvery = 100 * time.Millisecond
+	}
+	d.mu.Unlock()
+
+	if err := d.Start(context.Background()); err != nil {
+		t.Fatalf("start failed: %v", err)
+	}
+	defer func() { _ = d.Stop(context.Background()) }()
+
+	waitUntil(t, 2*time.Second, func() bool {
+		fake.mu.Lock()
+		defer fake.mu.Unlock()
+		return fake.reconcileCalls >= 1
+	})
 }

@@ -24,12 +24,16 @@ type Dispatcher struct {
 }
 
 type jobConfig struct {
-	debounce time.Duration
+	debounce          time.Duration
+	reconcileEnabled  bool
+	reconcileInterval time.Duration
 }
 
 type jobState struct {
-	id       api.JobID
-	debounce time.Duration
+	id               api.JobID
+	debounce         time.Duration
+	reconcileEnabled bool
+	reconcileEvery   time.Duration
 
 	eventCh  chan api.FileEvent
 	manualCh chan manualRequest
@@ -71,7 +75,16 @@ func (d *Dispatcher) ConfigureJobs(jobs []api.Job) {
 		if debounce <= 0 {
 			debounce = time.Duration(api.DefaultEventDebounceMS) * time.Millisecond
 		}
-		next[job.ID] = jobConfig{debounce: debounce}
+
+		reconcileEvery := time.Duration(job.Strategy.PeriodicReconcile.IntervalMinutes) * time.Minute
+		if reconcileEvery <= 0 {
+			reconcileEvery = time.Duration(api.DefaultPeriodicIntervalMinutes) * time.Minute
+		}
+		next[job.ID] = jobConfig{
+			debounce:          debounce,
+			reconcileEnabled:  job.Strategy.PeriodicReconcile.Enabled,
+			reconcileInterval: reconcileEvery,
+		}
 	}
 	d.configs = next
 }
@@ -85,11 +98,13 @@ func (d *Dispatcher) RegisterJob(_ context.Context, jobID api.JobID) error {
 	}
 
 	state := &jobState{
-		id:       jobID,
-		debounce: d.debounceFor(jobID),
-		eventCh:  make(chan api.FileEvent, 1024),
-		manualCh: make(chan manualRequest, 16),
-		doneCh:   make(chan struct{}),
+		id:               jobID,
+		debounce:         d.debounceFor(jobID),
+		reconcileEnabled: d.reconcileEnabledFor(jobID),
+		reconcileEvery:   d.reconcileEveryFor(jobID),
+		eventCh:          make(chan api.FileEvent, 1024),
+		manualCh:         make(chan manualRequest, 16),
+		doneCh:           make(chan struct{}),
 	}
 	d.jobs[jobID] = state
 
@@ -238,12 +253,36 @@ func (d *Dispatcher) debounceFor(jobID api.JobID) time.Duration {
 	return time.Duration(api.DefaultEventDebounceMS) * time.Millisecond
 }
 
+func (d *Dispatcher) reconcileEnabledFor(jobID api.JobID) bool {
+	cfg, ok := d.configs[jobID]
+	if !ok {
+		return api.DefaultPeriodicReconcileEnabled
+	}
+	return cfg.reconcileEnabled
+}
+
+func (d *Dispatcher) reconcileEveryFor(jobID api.JobID) time.Duration {
+	cfg, ok := d.configs[jobID]
+	if ok && cfg.reconcileInterval > 0 {
+		return cfg.reconcileInterval
+	}
+	return time.Duration(api.DefaultPeriodicIntervalMinutes) * time.Minute
+}
+
 func (d *Dispatcher) runJob(ctx context.Context, state *jobState) {
 	defer close(state.doneCh)
 
 	pending := make(map[string]api.FileEvent)
 	var timer *time.Timer
 	var timerC <-chan time.Time
+	var reconcileTicker *time.Ticker
+	var reconcileC <-chan time.Time
+
+	if state.reconcileEnabled {
+		reconcileTicker = time.NewTicker(state.reconcileEvery)
+		reconcileC = reconcileTicker.C
+		defer reconcileTicker.Stop()
+	}
 
 	resetTimer := func() {
 		if timer == nil {
@@ -298,6 +337,14 @@ func (d *Dispatcher) runJob(ctx context.Context, state *jobState) {
 					api.Field{Key: "event_count", Value: len(events)},
 				)
 			}
+		case <-reconcileC:
+			if err := d.runReconcile(ctx, state.id); err != nil {
+				d.logger.Error(
+					"periodic reconcile failed",
+					err,
+					api.Field{Key: "job_id", Value: state.id},
+				)
+			}
 		}
 	}
 }
@@ -339,6 +386,11 @@ func (d *Dispatcher) runEventSync(ctx context.Context, jobID api.JobID, events [
 		})
 		return fallbackErr
 	}
+	return err
+}
+
+func (d *Dispatcher) runReconcile(ctx context.Context, jobID api.JobID) error {
+	_, err := d.backup.Reconcile(ctx, jobID)
 	return err
 }
 

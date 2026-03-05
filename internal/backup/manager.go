@@ -145,15 +145,15 @@ func (m *Manager) SyncByEvents(ctx context.Context, jobID api.JobID, events []ap
 	return result, nil
 }
 
-func (m *Manager) Reconcile(_ context.Context, jobID api.JobID) (api.SyncResult, error) {
-	result := api.SyncResult{
-		JobID:      jobID,
-		RunID:      api.RunID(""),
-		StartedAt:  time.Now(),
-		FinishedAt: time.Now(),
+func (m *Manager) Reconcile(ctx context.Context, jobID api.JobID) (api.SyncResult, error) {
+	req := api.SyncRequest{
+		JobID:       jobID,
+		RequestID:   api.RequestID(fmt.Sprintf("reconcile-%d", time.Now().UnixNano())),
+		Reason:      api.TriggerReconcile,
+		Mode:        api.SyncModeFull,
+		RequestedAt: time.Now(),
 	}
-	m.logger.Warn("reconcile is not implemented", api.Field{Key: "job_id", Value: jobID})
-	return result, api.ErrNotImplemented
+	return m.SyncNow(ctx, req)
 }
 
 func (m *Manager) Cancel(_ context.Context, _ api.RunID) error {
