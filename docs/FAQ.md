@@ -1,5 +1,21 @@
 # LiteSync FAQ（规划中）
 
+## 0. 为什么执行后没有出现 GUI 窗口？
+
+常见原因：
+
+- 你运行的是 `go run ./cmd/litesync`，这是 CLI 后台模式，不会弹窗。
+- GUI 入口是 `go run ./cmd/litesync-gui`。
+- GUI 依赖 Fyne 桌面驱动，必须启用 cgo（`CGO_ENABLED=1`）。
+- Windows 还需要可用的 `gcc`（建议 MinGW-w64）。
+
+建议步骤：
+
+1. 先确认命令是否正确：`go run ./cmd/litesync-gui`。
+2. PowerShell 中执行：`$env:CGO_ENABLED='1'`。
+3. 运行 `gcc --version` 检查编译器是否可用。
+4. 若仍失败，查看终端输出与日志目录错误信息。
+
 ## 1. 为什么某些文件没有及时同步？
 
 可能原因：
