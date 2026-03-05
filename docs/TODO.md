@@ -79,7 +79,7 @@
   - 退出前能完成在途任务收尾或安全中断
 - 依赖：P0-04, P0-06
 
-### [ ] P0-08 开机自启动基础能力
+### [x] P0-08 开机自启动基础能力
 
 - 目标：支持开机自启动开关与状态查询。
 - Definition of Done：
@@ -87,6 +87,8 @@
   - `Enable/Disable/Status` 接口行为一致
   - 权限不足时可提示可执行的排查建议
 - 依赖：P0-01
+- 实现状态：已完成基础版本（2026-03-05）
+- 说明：Windows 使用 Run 注册表，macOS 使用 LaunchAgents，Linux 使用 autostart desktop 文件。
 
 ### [ ] P0-09 周期校验（Reconcile）
 

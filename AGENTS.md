@@ -45,6 +45,7 @@ implemented_foundation:
   - scheduler_debounce_and_serial_execution_bootstrap
   - incremental_sync_pipeline_bootstrap
   - logging_persistence_and_error_codes_bootstrap
+  - startup_service_cross_platform_bootstrap
 ```
 
 ## 2. Agent 首次启动流程

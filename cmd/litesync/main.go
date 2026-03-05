@@ -91,6 +91,20 @@ func main() {
 	if err != nil {
 		logger.Warn("read startup status failed", api.Field{Key: "error", Value: err.Error()})
 	}
+	if cfg.App.Startup.Enabled && !startupStatus.Enabled {
+		if err := startupSvc.Enable(ctx); err != nil {
+			logger.Warn("enable startup failed", api.Field{Key: "error", Value: err.Error()})
+		}
+	}
+	if !cfg.App.Startup.Enabled && startupStatus.Enabled {
+		if err := startupSvc.Disable(ctx); err != nil {
+			logger.Warn("disable startup failed", api.Field{Key: "error", Value: err.Error()})
+		}
+	}
+	startupStatus, err = startupSvc.Status(ctx)
+	if err != nil {
+		logger.Warn("refresh startup status failed", api.Field{Key: "error", Value: err.Error()})
+	}
 
 	logger.Info(
 		"LiteSync initialized",
