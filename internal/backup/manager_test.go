@@ -5,6 +5,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -120,6 +122,205 @@ func TestFullSyncUpdateAndSkip(t *testing.T) {
 	}
 	if third.UpdatedFiles == 0 {
 		t.Fatalf("expected updated files > 0")
+	}
+}
+
+func TestIncrementalSyncApplyCreateWriteAndDeletePropagate(t *testing.T) {
+	src := t.TempDir()
+	dst := t.TempDir()
+
+	job := api.Job{
+		ID:        "job-inc-1",
+		Enabled:   true,
+		SourceDir: src,
+		TargetDir: dst,
+		Strategy: api.Strategy{
+			InitialSync:         "full",
+			DeletePolicy:        "propagate",
+			PreservePermissions: true,
+		},
+	}
+
+	logger := logx.NewWithWriter("debug", io.Discard)
+	m := New(logger)
+	m.ReplaceJobs([]api.Job{job})
+
+	mustWriteFile(t, filepath.Join(src, "old.txt"), "old")
+	_, err := m.SyncNow(context.Background(), api.SyncRequest{
+		JobID:       job.ID,
+		Reason:      api.TriggerStartup,
+		Mode:        api.SyncModeFull,
+		RequestedAt: time.Now(),
+	})
+	if err != nil {
+		t.Fatalf("baseline full sync failed: %v", err)
+	}
+
+	time.Sleep(1100 * time.Millisecond)
+	mustWriteFile(t, filepath.Join(src, "old.txt"), "old-updated")
+	mustWriteFile(t, filepath.Join(src, "new.txt"), "new")
+	mustWriteFile(t, filepath.Join(dst, "to-delete.txt"), "delete-me")
+
+	res, err := m.SyncByEvents(context.Background(), job.ID, []api.FileEvent{
+		{JobID: job.ID, Path: filepath.Join(src, "new.txt"), Op: api.FileCreate, OccurredAt: time.Now()},
+		{JobID: job.ID, Path: filepath.Join(src, "old.txt"), Op: api.FileWrite, OccurredAt: time.Now()},
+		{JobID: job.ID, Path: filepath.Join(src, "to-delete.txt"), Op: api.FileRemove, OccurredAt: time.Now()},
+	}, api.TriggerFileEvent)
+	if err != nil {
+		t.Fatalf("incremental sync failed: %v", err)
+	}
+	if res.CopiedFiles == 0 {
+		t.Fatalf("expected copied files > 0")
+	}
+	if res.UpdatedFiles == 0 {
+		t.Fatalf("expected updated files > 0")
+	}
+	if res.DeletedFiles == 0 {
+		t.Fatalf("expected deleted files > 0")
+	}
+
+	assertFileExists(t, filepath.Join(dst, "new.txt"))
+	assertFileExists(t, filepath.Join(dst, "old.txt"))
+	assertFileNotExists(t, filepath.Join(dst, "to-delete.txt"))
+}
+
+func TestIncrementalSyncDeleteIgnore(t *testing.T) {
+	src := t.TempDir()
+	dst := t.TempDir()
+
+	job := api.Job{
+		ID:        "job-inc-2",
+		Enabled:   true,
+		SourceDir: src,
+		TargetDir: dst,
+		Strategy: api.Strategy{
+			InitialSync:         "full",
+			DeletePolicy:        "ignore",
+			PreservePermissions: true,
+		},
+	}
+
+	logger := logx.NewWithWriter("debug", io.Discard)
+	m := New(logger)
+	m.ReplaceJobs([]api.Job{job})
+
+	mustWriteFile(t, filepath.Join(src, "keep.txt"), "v1")
+	_, err := m.SyncNow(context.Background(), api.SyncRequest{
+		JobID:       job.ID,
+		Reason:      api.TriggerStartup,
+		Mode:        api.SyncModeFull,
+		RequestedAt: time.Now(),
+	})
+	if err != nil {
+		t.Fatalf("baseline full sync failed: %v", err)
+	}
+
+	if err := os.Remove(filepath.Join(src, "keep.txt")); err != nil {
+		t.Fatalf("remove source file failed: %v", err)
+	}
+
+	res, err := m.SyncByEvents(context.Background(), job.ID, []api.FileEvent{
+		{JobID: job.ID, Path: filepath.Join(src, "keep.txt"), Op: api.FileRemove, OccurredAt: time.Now()},
+	}, api.TriggerFileEvent)
+	if err != nil {
+		t.Fatalf("incremental sync failed: %v", err)
+	}
+	if res.DeletedFiles != 0 {
+		t.Fatalf("expected deleted=0, got %d", res.DeletedFiles)
+	}
+	assertFileExists(t, filepath.Join(dst, "keep.txt"))
+}
+
+func TestIncrementalSyncExcludeRule(t *testing.T) {
+	src := t.TempDir()
+	dst := t.TempDir()
+
+	job := api.Job{
+		ID:        "job-inc-3",
+		Enabled:   true,
+		SourceDir: src,
+		TargetDir: dst,
+		Exclude:   []string{"*.tmp"},
+		Strategy: api.Strategy{
+			InitialSync:         "full",
+			DeletePolicy:        "propagate",
+			PreservePermissions: true,
+		},
+	}
+
+	logger := logx.NewWithWriter("debug", io.Discard)
+	m := New(logger)
+	m.ReplaceJobs([]api.Job{job})
+
+	mustWriteFile(t, filepath.Join(src, "ignore.tmp"), "tmp")
+	res, err := m.SyncByEvents(context.Background(), job.ID, []api.FileEvent{
+		{JobID: job.ID, Path: filepath.Join(src, "ignore.tmp"), Op: api.FileCreate, OccurredAt: time.Now()},
+	}, api.TriggerFileEvent)
+	if err != nil {
+		t.Fatalf("incremental sync failed: %v", err)
+	}
+	if res.SkippedFiles == 0 {
+		t.Fatalf("expected skipped files > 0")
+	}
+	assertFileNotExists(t, filepath.Join(dst, "ignore.tmp"))
+}
+
+func TestIncrementalSyncRetry(t *testing.T) {
+	src := t.TempDir()
+	dst := t.TempDir()
+	filePath := filepath.Join(src, "retry.txt")
+	mustWriteFile(t, filePath, "retry")
+
+	job := api.Job{
+		ID:        "job-inc-4",
+		Enabled:   true,
+		SourceDir: src,
+		TargetDir: dst,
+		Strategy: api.Strategy{
+			InitialSync:         "full",
+			DeletePolicy:        "propagate",
+			PreservePermissions: true,
+		},
+	}
+
+	logger := logx.NewWithWriter("debug", io.Discard)
+	m := New(logger)
+	m.ReplaceJobs([]api.Job{job})
+
+	var attempts int32
+	realCopy := m.copyOp
+	m.copyOp = func(srcPath, dstPath string, srcInfo os.FileInfo, preservePerm bool) (copyStatus, error) {
+		n := atomic.AddInt32(&attempts, 1)
+		if n < 3 {
+			return fileSkipped, os.ErrPermission
+		}
+		return realCopy(srcPath, dstPath, srcInfo, preservePerm)
+	}
+	m.sleepFn = func(_ time.Duration) {}
+
+	res, err := m.SyncByEvents(context.Background(), job.ID, []api.FileEvent{
+		{JobID: job.ID, Path: filePath, Op: api.FileCreate, OccurredAt: time.Now()},
+	}, api.TriggerFileEvent)
+	if err != nil {
+		t.Fatalf("incremental sync failed after retry: %v", err)
+	}
+	if atomic.LoadInt32(&attempts) < 3 {
+		t.Fatalf("expected retries, got attempts=%d", attempts)
+	}
+	if res.CopiedFiles == 0 && res.UpdatedFiles == 0 {
+		t.Fatalf("expected file copied/updated after retry")
+	}
+}
+
+func TestIncrementalSyncJobNotFound(t *testing.T) {
+	logger := logx.NewWithWriter("debug", io.Discard)
+	m := New(logger)
+	_, err := m.SyncByEvents(context.Background(), "missing", nil, api.TriggerFileEvent)
+	if err == nil {
+		t.Fatalf("expected error for missing job")
+	}
+	if !strings.Contains(err.Error(), "job not found") {
+		t.Fatalf("expected job not found error, got %v", err)
 	}
 }
 
