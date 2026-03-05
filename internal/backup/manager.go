@@ -27,6 +27,7 @@ type Manager struct {
 	copyOp   func(srcPath, dstPath string, srcInfo fs.FileInfo, preservePerm bool) (copyStatus, error)
 	removeOp func(targetPath string) (bool, error)
 	sleepFn  func(d time.Duration)
+	nowFn    func() time.Time
 }
 
 func New(logger api.Logger) *Manager {
@@ -39,6 +40,7 @@ func New(logger api.Logger) *Manager {
 			return removePath(targetPath)
 		},
 		sleepFn: time.Sleep,
+		nowFn:   time.Now,
 	}
 }
 
@@ -306,6 +308,15 @@ func (m *Manager) applyUpsert(
 
 	var status copyStatus
 	err = m.withRetry(ctx, 3, 120*time.Millisecond, func() error {
+		proceed, conflictErr := m.handleConflict(job, srcInfo, targetPath, relPath, result)
+		if conflictErr != nil {
+			return conflictErr
+		}
+		if !proceed {
+			status = fileSkipped
+			return nil
+		}
+
 		var opErr error
 		status, opErr = m.copyOp(srcPath, targetPath, srcInfo, job.Strategy.PreservePermissions)
 		return opErr
@@ -381,6 +392,105 @@ func resolveTargetPath(job api.Job, sourcePath string) (string, string, error) {
 	rel = filepath.ToSlash(rel)
 	targetPath := filepath.Join(job.TargetDir, filepath.FromSlash(rel))
 	return rel, targetPath, nil
+}
+
+func (m *Manager) handleConflict(
+	job api.Job,
+	srcInfo fs.FileInfo,
+	targetPath string,
+	relPath string,
+	result *api.SyncResult,
+) (bool, error) {
+	dstInfo, err := os.Stat(targetPath)
+	if errors.Is(err, os.ErrNotExist) {
+		return true, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if sameFileState(srcInfo, dstInfo) {
+		return true, nil
+	}
+
+	policy := strings.ToLower(strings.TrimSpace(job.Strategy.ConflictPolicy))
+	if policy == "" {
+		policy = api.DefaultConflictPolicy
+	}
+
+	switch policy {
+	case "overwrite":
+		result.ConflictCount++
+		return true, nil
+	case "backup_then_overwrite":
+		result.ConflictCount++
+		if err := m.backupConflict(targetPath, relPath, job.TargetDir); err != nil {
+			return false, err
+		}
+		return true, nil
+	case "skip":
+		result.ConflictCount++
+		result.SkippedFiles++
+		return false, nil
+	default:
+		return false, api.Wrap(api.ErrInvalidArgument, fmt.Sprintf("unsupported conflict_policy=%s", policy))
+	}
+}
+
+func (m *Manager) backupConflict(targetPath, relPath, targetRoot string) error {
+	ts := m.nowFn().Format("20060102-150405")
+	backupPath := filepath.Join(targetRoot, ".litesync_conflicts", ts, filepath.FromSlash(relPath))
+
+	info, err := os.Stat(targetPath)
+	if err != nil {
+		return err
+	}
+	if info.IsDir() {
+		return copyDir(targetPath, backupPath)
+	}
+
+	if err := os.MkdirAll(filepath.Dir(backupPath), 0o755); err != nil {
+		return err
+	}
+
+	src, err := os.Open(targetPath)
+	if err != nil {
+		return err
+	}
+	defer src.Close()
+
+	dst, err := os.Create(backupPath)
+	if err != nil {
+		return err
+	}
+	defer dst.Close()
+
+	if _, err := io.Copy(dst, src); err != nil {
+		return err
+	}
+	return nil
+}
+
+func copyDir(srcDir, dstDir string) error {
+	return filepath.WalkDir(srcDir, func(path string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		rel, err := filepath.Rel(srcDir, path)
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(dstDir, rel)
+		if d.IsDir() {
+			return os.MkdirAll(target, 0o755)
+		}
+
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		_, err = copyFileWithMode(path, target, info, true)
+		return err
+	})
 }
 
 func compactEvents(events []api.FileEvent) []api.FileEvent {
@@ -473,7 +583,18 @@ func (m *Manager) syncFull(ctx context.Context, job api.Job, result *api.SyncRes
 			return nil
 		}
 
-		status, err := copyFileWithMode(srcPath, dstPath, info, job.Strategy.PreservePermissions)
+		proceed, err := m.handleConflict(job, info, dstPath, relPath, result)
+		if err != nil {
+			failed = append(failed, fmt.Errorf("%s: %w", relPath, err))
+			result.ErrorCount++
+			logger.Warn("conflict handling failed", api.Field{Key: "path", Value: relPath}, api.Field{Key: "error", Value: err.Error()})
+			return nil
+		}
+		if !proceed {
+			return nil
+		}
+
+		status, err := m.copyOp(srcPath, dstPath, info, job.Strategy.PreservePermissions)
 		if err != nil {
 			failed = append(failed, fmt.Errorf("%s: %w", relPath, err))
 			result.ErrorCount++

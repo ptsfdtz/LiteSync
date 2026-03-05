@@ -50,6 +50,7 @@ implemented_foundation:
   - graceful_shutdown_and_runtime_state_bootstrap
   - background_command_control_bootstrap
   - multi_job_isolation_bootstrap
+  - conflict_policy_handling_bootstrap
 ```
 
 ## 2. Agent 首次启动流程

@@ -375,6 +375,110 @@ func TestRuntimeSnapshotUpdatedAfterSync(t *testing.T) {
 	}
 }
 
+func TestConflictPolicySkip(t *testing.T) {
+	src := t.TempDir()
+	dst := t.TempDir()
+
+	srcFile := filepath.Join(src, "a.txt")
+	dstFile := filepath.Join(dst, "a.txt")
+	mustWriteFile(t, srcFile, "source-v1")
+	mustWriteFile(t, dstFile, "target-v2")
+	time.Sleep(1100 * time.Millisecond)
+	mustWriteFile(t, srcFile, "source-v3")
+
+	job := api.Job{
+		ID:        "job-conf-skip",
+		Enabled:   true,
+		SourceDir: src,
+		TargetDir: dst,
+		Strategy: api.Strategy{
+			InitialSync:         "full",
+			DeletePolicy:        "propagate",
+			ConflictPolicy:      "skip",
+			PreservePermissions: true,
+		},
+	}
+
+	logger := logx.NewWithWriter("debug", io.Discard)
+	m := New(logger)
+	m.ReplaceJobs([]api.Job{job})
+
+	res, err := m.SyncByEvents(context.Background(), job.ID, []api.FileEvent{
+		{JobID: job.ID, Path: srcFile, Op: api.FileWrite, OccurredAt: time.Now()},
+	}, api.TriggerFileEvent)
+	if err != nil {
+		t.Fatalf("sync by events failed: %v", err)
+	}
+	if res.ConflictCount == 0 {
+		t.Fatalf("expected conflict count > 0")
+	}
+
+	got, err := os.ReadFile(dstFile)
+	if err != nil {
+		t.Fatalf("read dst failed: %v", err)
+	}
+	if string(got) != "target-v2" {
+		t.Fatalf("expected dst unchanged, got: %s", string(got))
+	}
+}
+
+func TestConflictPolicyBackupThenOverwrite(t *testing.T) {
+	src := t.TempDir()
+	dst := t.TempDir()
+
+	srcFile := filepath.Join(src, "a.txt")
+	dstFile := filepath.Join(dst, "a.txt")
+	mustWriteFile(t, srcFile, "source-v1")
+	mustWriteFile(t, dstFile, "target-v2")
+	time.Sleep(1100 * time.Millisecond)
+	mustWriteFile(t, srcFile, "source-v3")
+
+	job := api.Job{
+		ID:        "job-conf-backup",
+		Enabled:   true,
+		SourceDir: src,
+		TargetDir: dst,
+		Strategy: api.Strategy{
+			InitialSync:         "full",
+			DeletePolicy:        "propagate",
+			ConflictPolicy:      "backup_then_overwrite",
+			PreservePermissions: true,
+		},
+	}
+
+	logger := logx.NewWithWriter("debug", io.Discard)
+	m := New(logger)
+	m.nowFn = func() time.Time { return time.Date(2026, 3, 5, 12, 0, 0, 0, time.UTC) }
+	m.ReplaceJobs([]api.Job{job})
+
+	res, err := m.SyncByEvents(context.Background(), job.ID, []api.FileEvent{
+		{JobID: job.ID, Path: srcFile, Op: api.FileWrite, OccurredAt: time.Now()},
+	}, api.TriggerFileEvent)
+	if err != nil {
+		t.Fatalf("sync by events failed: %v", err)
+	}
+	if res.ConflictCount == 0 {
+		t.Fatalf("expected conflict count > 0")
+	}
+
+	got, err := os.ReadFile(dstFile)
+	if err != nil {
+		t.Fatalf("read dst failed: %v", err)
+	}
+	if string(got) != "source-v3" {
+		t.Fatalf("expected dst overwritten, got: %s", string(got))
+	}
+
+	backupFile := filepath.Join(dst, ".litesync_conflicts", "20260305-120000", "a.txt")
+	backupData, err := os.ReadFile(backupFile)
+	if err != nil {
+		t.Fatalf("read backup file failed: %v", err)
+	}
+	if string(backupData) != "target-v2" {
+		t.Fatalf("unexpected backup content: %s", string(backupData))
+	}
+}
+
 func mustWriteFile(t *testing.T, path string, content string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
