@@ -88,3 +88,10 @@ type RuntimeSnapshot struct {
 	GeneratedAt time.Time         `json:"generated_at"`
 	Jobs        []JobRuntimeState `json:"jobs"`
 }
+
+type RuntimeSummary struct {
+	GeneratedAt time.Time         `json:"generated_at"`
+	JobCount    int               `json:"job_count"`
+	Totals      SyncResult        `json:"totals"`
+	ErrorCodes  map[string]uint64 `json:"error_codes"`
+}

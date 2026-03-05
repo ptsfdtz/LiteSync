@@ -53,6 +53,7 @@ implemented_foundation:
   - conflict_policy_handling_bootstrap
   - soft_delete_recycle_bin_bootstrap
   - pending_event_recovery_replay_bootstrap
+  - runtime_metrics_and_report_export_bootstrap
 ```
 
 ## 2. Agent 首次启动流程

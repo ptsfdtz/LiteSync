@@ -185,6 +185,25 @@ func (m *Manager) RuntimeSnapshot() api.RuntimeSnapshot {
 	return snapshot
 }
 
+func (m *Manager) RuntimeSummary() api.RuntimeSummary {
+	snapshot := m.RuntimeSnapshot()
+	summary := api.RuntimeSummary{
+		GeneratedAt: snapshot.GeneratedAt,
+		JobCount:    len(snapshot.Jobs),
+		ErrorCodes:  make(map[string]uint64),
+	}
+	for _, st := range snapshot.Jobs {
+		summary.Totals.CopiedFiles += st.CopiedFiles
+		summary.Totals.UpdatedFiles += st.UpdatedFiles
+		summary.Totals.DeletedFiles += st.DeletedFiles
+		summary.Totals.SkippedFiles += st.SkippedFiles
+		summary.Totals.ConflictCount += st.ConflictCount
+		summary.Totals.ErrorCount += st.ErrorCount
+		summary.ErrorCodes[st.LastErrorCode]++
+	}
+	return summary
+}
+
 func (m *Manager) handleIncrementalEvent(
 	ctx context.Context,
 	job api.Job,

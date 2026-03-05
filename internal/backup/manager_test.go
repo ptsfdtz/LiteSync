@@ -373,6 +373,14 @@ func TestRuntimeSnapshotUpdatedAfterSync(t *testing.T) {
 	if !found {
 		t.Fatalf("job state not found")
 	}
+
+	summary := m.RuntimeSummary()
+	if summary.JobCount == 0 {
+		t.Fatalf("expected summary job count > 0")
+	}
+	if summary.ErrorCodes["OK"] == 0 {
+		t.Fatalf("expected OK error code aggregation")
+	}
 }
 
 func TestConflictPolicySkip(t *testing.T) {
