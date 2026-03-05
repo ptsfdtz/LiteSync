@@ -9,7 +9,7 @@
 project:
   name: LiteSync
   type: cross_platform_desktop_backup
-  status: planning_only
+  status: bootstrap_initialized
   sync_direction: source_to_target
 
 stack:
@@ -34,6 +34,12 @@ default_policies:
   conflict_policy: backup_then_overwrite
   delete_policy: propagate
   reconcile_enabled: true
+
+implemented_foundation:
+  - go_module_initialized
+  - project_structure_initialized
+  - config_file_service_bootstrap
+  - module_stubs_created
 ```
 
 ## 2. Agent 首次启动流程
