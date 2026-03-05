@@ -54,6 +54,9 @@ implemented_foundation:
   - soft_delete_recycle_bin_bootstrap
   - pending_event_recovery_replay_bootstrap
   - runtime_metrics_and_report_export_bootstrap
+  - install_upgrade_runbook_docs_completed
+  - full_sync_parallel_copy_tuning_bootstrap
+  - runtime_operator_commands_enhanced
 ```
 
 ## 2. Agent 首次启动流程

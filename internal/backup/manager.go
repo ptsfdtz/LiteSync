@@ -568,12 +568,86 @@ func (m *Manager) lookupJob(id api.JobID) (api.Job, bool) {
 
 func (m *Manager) syncFull(ctx context.Context, job api.Job, result *api.SyncResult, logger api.Logger) error {
 	matcher := newExcludeMatcher(job.Exclude)
+	type fileTask struct {
+		srcPath string
+		dstPath string
+		relPath string
+		info    fs.FileInfo
+	}
+
+	workerCount := job.Strategy.MaxParallelCopies
+	if workerCount <= 0 {
+		workerCount = api.DefaultMaxParallelCopies
+	}
+
+	tasks := make(chan fileTask, workerCount*4)
+	var wg sync.WaitGroup
+	var errMu sync.Mutex
 	var failed []error
+	var resMu sync.Mutex
+
+	worker := func() {
+		defer wg.Done()
+		for task := range tasks {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
+
+			proceed, err := m.handleConflict(job, task.info, task.dstPath, task.relPath, result)
+			if err != nil {
+				errMu.Lock()
+				failed = append(failed, fmt.Errorf("%s: %w", task.relPath, err))
+				errMu.Unlock()
+				resMu.Lock()
+				result.ErrorCount++
+				resMu.Unlock()
+				logger.Warn("conflict handling failed", api.Field{Key: "path", Value: task.relPath}, api.Field{Key: "error", Value: err.Error()})
+				continue
+			}
+			if !proceed {
+				continue
+			}
+
+			status, err := m.copyOp(task.srcPath, task.dstPath, task.info, job.Strategy.PreservePermissions)
+			if err != nil {
+				errMu.Lock()
+				failed = append(failed, fmt.Errorf("%s: %w", task.relPath, err))
+				errMu.Unlock()
+				resMu.Lock()
+				result.ErrorCount++
+				resMu.Unlock()
+				logger.Warn("copy file failed", api.Field{Key: "path", Value: task.relPath}, api.Field{Key: "error", Value: err.Error()})
+				continue
+			}
+
+			resMu.Lock()
+			switch status {
+			case fileCopied:
+				result.CopiedFiles++
+			case fileUpdated:
+				result.UpdatedFiles++
+			default:
+				result.SkippedFiles++
+			}
+			resMu.Unlock()
+		}
+	}
+
+	wg.Add(workerCount)
+	for i := 0; i < workerCount; i++ {
+		go worker()
+	}
 
 	walkErr := filepath.WalkDir(job.SourceDir, func(srcPath string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
+			errMu.Lock()
 			failed = append(failed, walkErr)
+			errMu.Unlock()
+			resMu.Lock()
 			result.ErrorCount++
+			resMu.Unlock()
 			return nil
 		}
 
@@ -589,14 +663,20 @@ func (m *Manager) syncFull(ctx context.Context, job api.Job, result *api.SyncRes
 
 		relPath, err := filepath.Rel(job.SourceDir, srcPath)
 		if err != nil {
+			errMu.Lock()
 			failed = append(failed, err)
+			errMu.Unlock()
+			resMu.Lock()
 			result.ErrorCount++
+			resMu.Unlock()
 			return nil
 		}
 		relPath = filepath.ToSlash(filepath.Clean(relPath))
 
 		if matcher.Match(relPath, d.IsDir()) {
+			resMu.Lock()
 			result.SkippedFiles++
+			resMu.Unlock()
 			if d.IsDir() {
 				return filepath.SkipDir
 			}
@@ -606,47 +686,37 @@ func (m *Manager) syncFull(ctx context.Context, job api.Job, result *api.SyncRes
 		dstPath := filepath.Join(job.TargetDir, relPath)
 		if d.IsDir() {
 			if err := os.MkdirAll(dstPath, 0o755); err != nil {
+				errMu.Lock()
 				failed = append(failed, fmt.Errorf("%s: %w", relPath, err))
+				errMu.Unlock()
+				resMu.Lock()
 				result.ErrorCount++
+				resMu.Unlock()
 			}
 			return nil
 		}
 
 		info, err := d.Info()
 		if err != nil {
+			errMu.Lock()
 			failed = append(failed, fmt.Errorf("%s: %w", relPath, err))
+			errMu.Unlock()
+			resMu.Lock()
 			result.ErrorCount++
+			resMu.Unlock()
 			return nil
 		}
 
-		proceed, err := m.handleConflict(job, info, dstPath, relPath, result)
-		if err != nil {
-			failed = append(failed, fmt.Errorf("%s: %w", relPath, err))
-			result.ErrorCount++
-			logger.Warn("conflict handling failed", api.Field{Key: "path", Value: relPath}, api.Field{Key: "error", Value: err.Error()})
-			return nil
-		}
-		if !proceed {
-			return nil
-		}
-
-		status, err := m.copyOp(srcPath, dstPath, info, job.Strategy.PreservePermissions)
-		if err != nil {
-			failed = append(failed, fmt.Errorf("%s: %w", relPath, err))
-			result.ErrorCount++
-			logger.Warn("copy file failed", api.Field{Key: "path", Value: relPath}, api.Field{Key: "error", Value: err.Error()})
-			return nil
-		}
-		switch status {
-		case fileCopied:
-			result.CopiedFiles++
-		case fileUpdated:
-			result.UpdatedFiles++
-		default:
-			result.SkippedFiles++
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case tasks <- fileTask{srcPath: srcPath, dstPath: dstPath, relPath: relPath, info: info}:
 		}
 		return nil
 	})
+
+	close(tasks)
+	wg.Wait()
 
 	if walkErr != nil {
 		if errors.Is(walkErr, context.Canceled) {

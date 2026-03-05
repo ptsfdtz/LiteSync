@@ -13,6 +13,7 @@ const (
 	DefaultPeriodicIntervalMinutes  = 30
 	DefaultDeletePolicy             = "propagate"
 	DefaultConflictPolicy           = "backup_then_overwrite"
+	DefaultMaxParallelCopies        = 4
 )
 
 type Config struct {
@@ -50,6 +51,7 @@ type Strategy struct {
 	PeriodicReconcile   PeriodicReconcile `yaml:"periodic_reconcile"`
 	DeletePolicy        string            `yaml:"delete_policy"`
 	ConflictPolicy      string            `yaml:"conflict_policy"`
+	MaxParallelCopies   int               `yaml:"max_parallel_copies"`
 	FollowSymlinks      bool              `yaml:"follow_symlinks"`
 	PreservePermissions bool              `yaml:"preserve_permissions"`
 }
@@ -112,6 +114,9 @@ func (c *Config) ApplyDefaults() {
 		}
 		if c.Jobs[i].Strategy.ConflictPolicy == "" {
 			c.Jobs[i].Strategy.ConflictPolicy = DefaultConflictPolicy
+		}
+		if c.Jobs[i].Strategy.MaxParallelCopies <= 0 {
+			c.Jobs[i].Strategy.MaxParallelCopies = DefaultMaxParallelCopies
 		}
 		if c.Jobs[i].Exclude == nil {
 			c.Jobs[i].Exclude = []string{}

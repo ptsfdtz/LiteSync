@@ -121,7 +121,7 @@ func main() {
 		api.Field{Key: "startup_enabled", Value: startupStatus.Enabled},
 		api.Field{Key: "watcher_impl", Value: fmt.Sprintf("%T", watcherSvc)},
 	)
-	logger.Info("runtime commands available", api.Field{Key: "commands", Value: "sync | status | report | open | exit"})
+	logger.Info("runtime commands available", api.Field{Key: "commands", Value: "help | sync | status | report | logs | open | exit"})
 
 	go func() {
 		for {
@@ -187,7 +187,7 @@ func main() {
 		}
 	}
 
-	go commandLoop(ctx, stop, logger, schedulerSvc, backupManager, reporter, activeJobs)
+	go commandLoop(ctx, stop, logger, schedulerSvc, backupManager, reporter, logDir, activeJobs)
 
 	<-ctx.Done()
 	logger.Info("LiteSync shutting down")
@@ -223,6 +223,7 @@ func commandLoop(
 	schedulerSvc api.Scheduler,
 	backupManager *backup.Manager,
 	reporter *state.ReportExporter,
+	logDir string,
 	jobIDs []api.JobID,
 ) {
 	scanner := bufio.NewScanner(os.Stdin)
@@ -242,6 +243,8 @@ func commandLoop(
 			continue
 		case "sync":
 			triggerAllSync(ctx, logger, schedulerSvc, jobIDs)
+		case "help":
+			logger.Info("available commands", api.Field{Key: "commands", Value: "help | sync | status | report | logs | open | exit"})
 		case "status":
 			summary := backupManager.RuntimeSummary()
 			logger.Info(
@@ -263,6 +266,8 @@ func commandLoop(
 				continue
 			}
 			logger.Info("runtime report exported", api.Field{Key: "path", Value: path})
+		case "logs":
+			logger.Info("log directory", api.Field{Key: "path", Value: logDir})
 		case "open":
 			logger.Info("open command received", api.Field{Key: "status", Value: "UI not implemented, command acknowledged"})
 		case "exit", "quit":

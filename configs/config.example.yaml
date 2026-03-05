@@ -27,5 +27,6 @@ jobs:
         interval_minutes: 30
       delete_policy: propagate
       conflict_policy: backup_then_overwrite
+      max_parallel_copies: 4
       follow_symlinks: false
       preserve_permissions: true

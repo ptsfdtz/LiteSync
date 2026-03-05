@@ -57,6 +57,7 @@ jobs: []
 | `jobs[].strategy.periodic_reconcile.interval_minutes` | `int` | 否 | `30` | 周期校验间隔（分钟） |
 | `jobs[].strategy.delete_policy` | `string` | 否 | `propagate` | 删除策略：`propagate/soft_delete/ignore` |
 | `jobs[].strategy.conflict_policy` | `string` | 否 | `backup_then_overwrite` | 冲突策略：`overwrite/backup_then_overwrite/skip` |
+| `jobs[].strategy.max_parallel_copies` | `int` | 否 | `4` | 全量同步并行复制 worker 数 |
 | `jobs[].strategy.follow_symlinks` | `bool` | 否 | `false` | 是否跟随软链接 |
 | `jobs[].strategy.preserve_permissions` | `bool` | 否 | `true` | 是否保留文件权限（尽力而为） |
 
@@ -98,6 +99,7 @@ jobs:
         interval_minutes: 30
       delete_policy: propagate
       conflict_policy: backup_then_overwrite
+      max_parallel_copies: 4
       follow_symlinks: false
       preserve_permissions: true
 ```

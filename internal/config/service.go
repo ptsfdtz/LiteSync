@@ -183,6 +183,9 @@ func (s *FileService) Validate(cfg api.Config) error {
 		if job.Strategy.PeriodicReconcile.IntervalMinutes < 0 {
 			return api.Wrap(api.ErrInvalidArgument, fmt.Sprintf("jobs[%d].strategy.periodic_reconcile.interval_minutes must be >= 0", i))
 		}
+		if job.Strategy.MaxParallelCopies < 0 {
+			return api.Wrap(api.ErrInvalidArgument, fmt.Sprintf("jobs[%d].strategy.max_parallel_copies must be >= 0", i))
+		}
 	}
 
 	return nil
