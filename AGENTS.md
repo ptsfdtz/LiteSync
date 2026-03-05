@@ -42,6 +42,7 @@ implemented_foundation:
   - module_stubs_created
   - initial_full_sync_bootstrap
   - file_event_watcher_bootstrap
+  - scheduler_debounce_and_serial_execution_bootstrap
 ```
 
 ## 2. Agent 首次启动流程

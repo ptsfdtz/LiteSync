@@ -60,6 +60,7 @@ func main() {
 	backupManager := backup.New(logger)
 	backupManager.ReplaceJobs(cfg.Jobs)
 	schedulerSvc := scheduler.New(backupManager, logger)
+	schedulerSvc.ConfigureJobs(cfg.Jobs)
 	watcherSvc := watcher.New()
 	startupSvc := startup.New()
 
