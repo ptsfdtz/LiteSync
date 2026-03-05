@@ -40,6 +40,7 @@ implemented_foundation:
   - project_structure_initialized
   - config_file_service_bootstrap
   - module_stubs_created
+  - initial_full_sync_bootstrap
 ```
 
 ## 2. Agent 首次启动流程

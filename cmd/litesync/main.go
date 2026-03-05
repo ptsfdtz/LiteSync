@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
+	"time"
 
 	"litesync/internal/api"
 	"litesync/internal/backup"
@@ -56,6 +58,7 @@ func main() {
 	defer func() { _ = logger.Sync() }()
 
 	backupManager := backup.New(logger)
+	backupManager.ReplaceJobs(cfg.Jobs)
 	schedulerSvc := scheduler.New(backupManager, logger)
 	watcherSvc := watcher.New()
 	startupSvc := startup.New()
@@ -79,8 +82,53 @@ func main() {
 		api.Field{Key: "watcher_stub", Value: fmt.Sprintf("%T", watcherSvc)},
 	)
 
+	for _, job := range cfg.Jobs {
+		if !job.Enabled {
+			logger.Info("skip disabled job", api.Field{Key: "job_id", Value: job.ID})
+			continue
+		}
+
+		if err := schedulerSvc.RegisterJob(ctx, job.ID); err != nil {
+			logger.Error("register job failed", err, api.Field{Key: "job_id", Value: job.ID})
+			continue
+		}
+
+		if err := watcherSvc.Start(ctx, job.ID, job.SourceDir); err != nil {
+			logger.Error("start watcher failed", err, api.Field{Key: "job_id", Value: job.ID})
+		}
+
+		if isInitialFullSync(job) {
+			res, err := backupManager.SyncNow(ctx, api.SyncRequest{
+				JobID:       job.ID,
+				RequestID:   api.RequestID(fmt.Sprintf("startup-%d", time.Now().UnixNano())),
+				Reason:      api.TriggerStartup,
+				Mode:        api.SyncModeFull,
+				RequestedAt: time.Now(),
+			})
+			if err != nil {
+				logger.Error("startup full sync failed", err,
+					api.Field{Key: "job_id", Value: job.ID},
+					api.Field{Key: "run_id", Value: res.RunID},
+					api.Field{Key: "errors", Value: res.ErrorCount},
+				)
+				continue
+			}
+			logger.Info("startup full sync success",
+				api.Field{Key: "job_id", Value: job.ID},
+				api.Field{Key: "run_id", Value: res.RunID},
+				api.Field{Key: "copied", Value: res.CopiedFiles},
+				api.Field{Key: "updated", Value: res.UpdatedFiles},
+				api.Field{Key: "skipped", Value: res.SkippedFiles},
+			)
+		}
+	}
+
 	<-ctx.Done()
 	logger.Info("LiteSync shutting down")
+}
+
+func isInitialFullSync(job api.Job) bool {
+	return strings.EqualFold(strings.TrimSpace(job.Strategy.InitialSync), "full")
 }
 
 func fatal(err error) {

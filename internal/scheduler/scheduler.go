@@ -71,7 +71,7 @@ func (d *Dispatcher) TriggerNow(ctx context.Context, jobID api.JobID, reason api
 		JobID:       jobID,
 		RequestID:   api.RequestID(runID),
 		Reason:      reason,
-		Mode:        api.SyncModeIncremental,
+		Mode:        api.SyncModeFull,
 		RequestedAt: time.Now(),
 	})
 	return runID, err
