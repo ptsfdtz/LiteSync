@@ -44,6 +44,7 @@ implemented_foundation:
   - file_event_watcher_bootstrap
   - scheduler_debounce_and_serial_execution_bootstrap
   - incremental_sync_pipeline_bootstrap
+  - logging_persistence_and_error_codes_bootstrap
 ```
 
 ## 2. Agent 首次启动流程

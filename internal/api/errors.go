@@ -23,3 +23,28 @@ func Wrap(kind error, msg string) error {
 	}
 	return fmt.Errorf("%w: %s", kind, msg)
 }
+
+func ErrorCode(err error) string {
+	switch {
+	case err == nil:
+		return "OK"
+	case errors.Is(err, ErrInvalidArgument):
+		return "INVALID_ARGUMENT"
+	case errors.Is(err, ErrJobNotFound):
+		return "JOB_NOT_FOUND"
+	case errors.Is(err, ErrAlreadyRunning):
+		return "ALREADY_RUNNING"
+	case errors.Is(err, ErrPermissionDenied):
+		return "PERMISSION_DENIED"
+	case errors.Is(err, ErrIOTransient):
+		return "IO_TRANSIENT"
+	case errors.Is(err, ErrConflictDetected):
+		return "CONFLICT_DETECTED"
+	case errors.Is(err, ErrNotSupported):
+		return "NOT_SUPPORTED"
+	case errors.Is(err, ErrNotImplemented):
+		return "NOT_IMPLEMENTED"
+	default:
+		return "INTERNAL"
+	}
+}

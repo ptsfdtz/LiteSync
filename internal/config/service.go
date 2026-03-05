@@ -37,6 +37,32 @@ func DefaultPath() (string, error) {
 	}
 }
 
+func DefaultLogDir() (string, error) {
+	base, err := os.UserConfigDir()
+	if err != nil {
+		return "", err
+	}
+	switch runtime.GOOS {
+	case "windows", "darwin":
+		return filepath.Join(base, "LiteSync", "logs"), nil
+	default:
+		return filepath.Join(base, "litesync", "logs"), nil
+	}
+}
+
+func DefaultStateDir() (string, error) {
+	base, err := os.UserConfigDir()
+	if err != nil {
+		return "", err
+	}
+	switch runtime.GOOS {
+	case "windows", "darwin":
+		return filepath.Join(base, "LiteSync", "state"), nil
+	default:
+		return filepath.Join(base, "litesync", "state"), nil
+	}
+}
+
 func (s *FileService) Load(ctx context.Context) (api.Config, error) {
 	select {
 	case <-ctx.Done():

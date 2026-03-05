@@ -54,7 +54,25 @@ func main() {
 		}
 	}
 
-	logger := logx.New(cfg.App.LogLevel)
+	logDir := strings.TrimSpace(cfg.App.LogDir)
+	if logDir == "" {
+		logDir, err = config.DefaultLogDir()
+		if err != nil {
+			fatal(err)
+		}
+	}
+	stateDir := strings.TrimSpace(cfg.App.StateDir)
+	if stateDir == "" {
+		stateDir, err = config.DefaultStateDir()
+		if err != nil {
+			fatal(err)
+		}
+	}
+
+	logger, logFile, err := logx.NewWithFile(cfg.App.LogLevel, logDir)
+	if err != nil {
+		fatal(err)
+	}
 	defer func() { _ = logger.Sync() }()
 
 	backupManager := backup.New(logger)
@@ -78,6 +96,9 @@ func main() {
 		"LiteSync initialized",
 		api.Field{Key: "config_path", Value: configPath},
 		api.Field{Key: "jobs", Value: len(cfg.Jobs)},
+		api.Field{Key: "log_dir", Value: logDir},
+		api.Field{Key: "log_file", Value: logFile},
+		api.Field{Key: "state_dir", Value: stateDir},
 		api.Field{Key: "startup_provider", Value: startupStatus.Provider},
 		api.Field{Key: "startup_enabled", Value: startupStatus.Enabled},
 		api.Field{Key: "watcher_impl", Value: fmt.Sprintf("%T", watcherSvc)},
