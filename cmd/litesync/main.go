@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"flag"
@@ -118,6 +119,7 @@ func main() {
 		api.Field{Key: "startup_enabled", Value: startupStatus.Enabled},
 		api.Field{Key: "watcher_impl", Value: fmt.Sprintf("%T", watcherSvc)},
 	)
+	logger.Info("runtime commands available", api.Field{Key: "commands", Value: "sync | open | exit"})
 
 	go func() {
 		for {
@@ -183,6 +185,8 @@ func main() {
 		}
 	}
 
+	go commandLoop(ctx, stop, logger, schedulerSvc, activeJobs)
+
 	<-ctx.Done()
 	logger.Info("LiteSync shutting down")
 
@@ -208,6 +212,53 @@ func main() {
 
 func isInitialFullSync(job api.Job) bool {
 	return strings.EqualFold(strings.TrimSpace(job.Strategy.InitialSync), "full")
+}
+
+func commandLoop(
+	ctx context.Context,
+	stop func(),
+	logger api.Logger,
+	schedulerSvc api.Scheduler,
+	jobIDs []api.JobID,
+) {
+	scanner := bufio.NewScanner(os.Stdin)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+
+		if !scanner.Scan() {
+			return
+		}
+		cmd := strings.ToLower(strings.TrimSpace(scanner.Text()))
+		switch cmd {
+		case "":
+			continue
+		case "sync":
+			triggerAllSync(ctx, logger, schedulerSvc, jobIDs)
+		case "open":
+			logger.Info("open command received", api.Field{Key: "status", Value: "UI not implemented, command acknowledged"})
+		case "exit", "quit":
+			logger.Info("exit command received")
+			stop()
+			return
+		default:
+			logger.Warn("unknown command", api.Field{Key: "command", Value: cmd})
+		}
+	}
+}
+
+func triggerAllSync(ctx context.Context, logger api.Logger, schedulerSvc api.Scheduler, jobIDs []api.JobID) {
+	for _, jobID := range jobIDs {
+		runID, err := schedulerSvc.TriggerNow(ctx, jobID, api.TriggerManual)
+		if err != nil {
+			logger.Warn("manual sync trigger failed", api.Field{Key: "job_id", Value: jobID}, api.Field{Key: "error", Value: err.Error()})
+			continue
+		}
+		logger.Info("manual sync triggered", api.Field{Key: "job_id", Value: jobID}, api.Field{Key: "run_id", Value: runID})
+	}
 }
 
 func fatal(err error) {
