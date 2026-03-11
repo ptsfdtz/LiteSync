@@ -19,6 +19,13 @@ func DefaultConfig() Config {
 type RuntimeStatus struct {
 	Running          bool       `json:"running"`
 	CurrentAction    string     `json:"currentAction,omitempty"`
+	ProgressPercent  float64    `json:"progressPercent"`
+	TotalFiles       int        `json:"totalFiles"`
+	ProcessedFiles   int        `json:"processedFiles"`
+	CurrentFile      string     `json:"currentFile,omitempty"`
+	FilesCopied      int        `json:"filesCopied"`
+	FilesDeleted     int        `json:"filesDeleted"`
+	BytesCopied      int64      `json:"bytesCopied"`
 	LastRunAt        *time.Time `json:"lastRunAt,omitempty"`
 	LastSuccessAt    *time.Time `json:"lastSuccessAt,omitempty"`
 	LastError        string     `json:"lastError,omitempty"`

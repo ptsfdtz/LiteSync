@@ -133,16 +133,16 @@ func (s *Service) TriggerBackup(ctx context.Context, trigger string) error {
 		return ErrBackupAlreadyRunning
 	}
 
-	s.logInfo(fmt.Sprintf("backup started by %s", trigger))
-	result, err := backup.Run(ctx, cfg.SourceDir, cfg.TargetDir)
+	s.logInfo(fmt.Sprintf("sync started by %s", trigger))
+	result, err := backup.Run(ctx, cfg.SourceDir, cfg.TargetDir, s.updateProgress)
 	if err != nil {
 		s.completeRun(err, "")
-		s.logError(fmt.Sprintf("backup failed: %v", err))
+		s.logError(fmt.Sprintf("sync failed: %v", err))
 		return err
 	}
 
 	s.completeRun(nil, result.Destination)
-	s.logInfo(fmt.Sprintf("backup finished: %d files, %d bytes -> %s", result.FilesCopied, result.BytesCopied, result.Destination))
+	s.logInfo(fmt.Sprintf("sync finished: copied %d, deleted %d, %d bytes -> %s", result.FilesCopied, result.FilesDeleted, result.BytesCopied, result.Destination))
 	return nil
 }
 
@@ -156,7 +156,14 @@ func (s *Service) beginRun(trigger string) bool {
 
 	now := time.Now().UTC()
 	s.status.Running = true
-	s.status.CurrentAction = "running backup"
+	s.status.CurrentAction = "scanning files"
+	s.status.ProgressPercent = 0
+	s.status.TotalFiles = 0
+	s.status.ProcessedFiles = 0
+	s.status.CurrentFile = ""
+	s.status.FilesCopied = 0
+	s.status.FilesDeleted = 0
+	s.status.BytesCopied = 0
 	s.status.LastRunAt = &now
 	s.status.LastTrigger = trigger
 	s.status.TotalRuns++
@@ -169,6 +176,8 @@ func (s *Service) completeRun(runErr error, destination string) {
 
 	s.status.Running = false
 	s.status.CurrentAction = "idle"
+	s.status.ProgressPercent = 100
+	s.status.CurrentFile = ""
 
 	if runErr != nil {
 		s.status.FailedRuns++
@@ -235,7 +244,7 @@ func (s *Service) runScheduler(ctx context.Context, interval time.Duration) {
 		case <-ticker.C:
 			s.setNextScheduledRun(time.Now().UTC().Add(interval))
 			if err := s.TriggerBackup(ctx, "schedule"); err != nil && !errors.Is(err, ErrBackupAlreadyRunning) {
-				s.logError(fmt.Sprintf("scheduled backup failed: %v", err))
+				s.logError(fmt.Sprintf("scheduled sync failed: %v", err))
 			}
 		}
 	}
@@ -245,7 +254,7 @@ func (s *Service) runWatcher(ctx context.Context, sourceDir string) {
 	w := watcher.New(2 * time.Second)
 	err := w.Run(ctx, sourceDir, func() {
 		if triggerErr := s.TriggerBackup(ctx, "watch"); triggerErr != nil && !errors.Is(triggerErr, ErrBackupAlreadyRunning) {
-			s.logError(fmt.Sprintf("watch-triggered backup failed: %v", triggerErr))
+			s.logError(fmt.Sprintf("watch-triggered sync failed: %v", triggerErr))
 		}
 	})
 	if err != nil && ctx.Err() == nil {
@@ -265,6 +274,32 @@ func (s *Service) clearNextScheduledRun() {
 	s.statusMu.Lock()
 	defer s.statusMu.Unlock()
 	s.status.NextScheduledRun = nil
+}
+
+func (s *Service) updateProgress(progress backup.Progress) {
+	s.statusMu.Lock()
+	defer s.statusMu.Unlock()
+
+	s.status.TotalFiles = progress.TotalFiles
+	s.status.ProcessedFiles = progress.ProcessedFiles
+	s.status.CurrentFile = progress.CurrentPath
+	s.status.FilesCopied = progress.FilesCopied
+	s.status.FilesDeleted = progress.FilesDeleted
+	s.status.BytesCopied = progress.BytesCopied
+	s.status.ProgressPercent = progress.Percent
+
+	switch progress.Phase {
+	case "scanning":
+		s.status.CurrentAction = "scanning files"
+	case "copying":
+		s.status.CurrentAction = "mirroring files"
+	case "deleting":
+		s.status.CurrentAction = "cleaning stale files"
+	case "done":
+		if s.status.CurrentAction == "" {
+			s.status.CurrentAction = "idle"
+		}
+	}
 }
 
 func (s *Service) logInfo(message string) {
@@ -309,7 +344,12 @@ func validateConfig(cfg model.Config) error {
 	if samePath(sourceAbs, targetAbs) {
 		return errors.New("sourceDir and targetDir must be different")
 	}
-	if isSubPath(sourceAbs, targetAbs) {
+	sourceName := filepath.Base(filepath.Clean(sourceAbs))
+	mirrorDestAbs := filepath.Join(targetAbs, sourceName)
+	if samePath(sourceAbs, mirrorDestAbs) {
+		return errors.New("targetDir cannot resolve to the same source path")
+	}
+	if isSubPath(sourceAbs, mirrorDestAbs) {
 		return errors.New("targetDir cannot be inside sourceDir")
 	}
 

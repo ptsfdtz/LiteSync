@@ -3,10 +3,12 @@ package httpapi
 import (
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"strconv"
 	"time"
 
+	"litesync/server/internal/folderpicker"
 	"litesync/server/internal/model"
 	"litesync/server/internal/service"
 )
@@ -26,6 +28,7 @@ func New(svc *service.Service) http.Handler {
 	mux.HandleFunc("/api/status", handler.handleStatus)
 	mux.HandleFunc("/api/logs", handler.handleLogs)
 	mux.HandleFunc("/api/backup", handler.handleBackup)
+	mux.HandleFunc("/api/folder-picker", handler.handleFolderPicker)
 
 	return withCORS(mux)
 }
@@ -126,6 +129,50 @@ func (h *Handler) handleBackup(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, http.StatusOK, map[string]string{
 		"status": "ok",
+	})
+}
+
+func (h *Handler) handleFolderPicker(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+
+	var request struct {
+		InitialPath string `json:"initialPath"`
+	}
+
+	if r.Body != nil {
+		decoder := json.NewDecoder(r.Body)
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&request); err != nil && !errors.Is(err, io.EOF) {
+			writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
+			return
+		}
+	}
+
+	selectedPath, err := folderpicker.Pick(request.InitialPath)
+	if err != nil {
+		if errors.Is(err, folderpicker.ErrCancelled) {
+			writeJSON(w, http.StatusOK, map[string]any{
+				"cancelled": true,
+				"path":      "",
+			})
+			return
+		}
+
+		if errors.Is(err, folderpicker.ErrNotSupported) {
+			writeError(w, http.StatusNotImplemented, "folder picker is only available on Windows desktop mode")
+			return
+		}
+
+		writeError(w, http.StatusInternalServerError, "failed to open folder picker")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"cancelled": false,
+		"path":      selectedPath,
 	})
 }
 

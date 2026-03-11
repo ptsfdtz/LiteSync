@@ -10,6 +10,7 @@ import {
 } from "@workspace/ui/components/card"
 import { Input } from "@workspace/ui/components/input"
 import { Label } from "@workspace/ui/components/label"
+import { Progress } from "@workspace/ui/components/progress"
 import { Switch } from "@workspace/ui/components/switch"
 import { Textarea } from "@workspace/ui/components/textarea"
 
@@ -23,6 +24,13 @@ type AppConfig = {
 type RuntimeStatus = {
   running: boolean
   currentAction?: string
+  progressPercent: number
+  totalFiles: number
+  processedFiles: number
+  currentFile?: string
+  filesCopied: number
+  filesDeleted: number
+  bytesCopied: number
   lastRunAt?: string
   lastSuccessAt?: string
   lastError?: string
@@ -44,6 +52,11 @@ type LogEntry = {
   message: string
 }
 
+type FolderPickerResponse = {
+  cancelled: boolean
+  path: string
+}
+
 const defaultConfig: AppConfig = {
   sourceDir: "",
   targetDir: "",
@@ -53,6 +66,12 @@ const defaultConfig: AppConfig = {
 
 const defaultStatus: RuntimeStatus = {
   running: false,
+  progressPercent: 0,
+  totalFiles: 0,
+  processedFiles: 0,
+  filesCopied: 0,
+  filesDeleted: 0,
+  bytesCopied: 0,
   totalRuns: 0,
   successRuns: 0,
   failedRuns: 0,
@@ -68,13 +87,20 @@ function apiURL(path: string) {
 }
 
 async function requestJSON<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(apiURL(path), {
-    headers: {
-      "Content-Type": "application/json",
-      ...(init?.headers || {}),
-    },
-    ...init,
-  })
+  let response: Response
+  try {
+    response = await fetch(apiURL(path), {
+      headers: {
+        "Content-Type": "application/json",
+        ...(init?.headers || {}),
+      },
+      ...init,
+    })
+  } catch {
+    throw new Error(
+      "无法连接到 LiteSync 服务。请确认程序正在运行，并通过 http://localhost:8080 访问页面。"
+    )
+  }
 
   const payload = await response.json().catch(() => ({}))
   if (!response.ok) {
@@ -115,8 +141,11 @@ export function App() {
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [triggering, setTriggering] = useState(false)
+  const [pickingSourceDir, setPickingSourceDir] = useState(false)
+  const [pickingTargetDir, setPickingTargetDir] = useState(false)
   const [message, setMessage] = useState("")
   const [error, setError] = useState("")
+  const [offlineError, setOfflineError] = useState("")
 
   const renderedLogs = useMemo(() => {
     if (logs.length === 0) {
@@ -144,6 +173,7 @@ export function App() {
 
     setStatus(statusPayload.status)
     setLogs(logsPayload.logs)
+    setOfflineError("")
   }
 
   useEffect(() => {
@@ -170,8 +200,14 @@ export function App() {
     void run()
 
     const timer = window.setInterval(() => {
-      void refreshStatusAndLogs().catch(() => undefined)
-    }, 5000)
+      void refreshStatusAndLogs().catch((refreshError) => {
+        setOfflineError(
+          refreshError instanceof Error
+            ? refreshError.message
+            : "状态刷新失败，请确认服务仍在运行。"
+        )
+      })
+    }, 2000)
 
     return () => {
       cancelled = true
@@ -190,7 +226,7 @@ export function App() {
       })
       setConfig(saved)
       await refreshStatusAndLogs()
-      setMessage("配置已保存，调度器与监听器已更新。")
+      setMessage("配置已保存，镜像同步规则已更新。")
     } catch (saveError) {
       setError(saveError instanceof Error ? saveError.message : "保存失败")
     } finally {
@@ -205,7 +241,7 @@ export function App() {
     try {
       await requestJSON("backup", { method: "POST" })
       await refreshStatusAndLogs()
-      setMessage("已触发立即备份。")
+      setMessage("已触发立即同步。")
     } catch (triggerError) {
       setError(
         triggerError instanceof Error ? triggerError.message : "触发失败"
@@ -215,17 +251,57 @@ export function App() {
     }
   }
 
+  async function pickFolder(mode: "source" | "target") {
+    const isSource = mode === "source"
+
+    if (isSource) {
+      setPickingSourceDir(true)
+    } else {
+      setPickingTargetDir(true)
+    }
+
+    setError("")
+
+    try {
+      const initialPath = isSource ? config.sourceDir : config.targetDir
+      const result = await requestJSON<FolderPickerResponse>("folder-picker", {
+        method: "POST",
+        body: JSON.stringify({ initialPath }),
+      })
+
+      if (result.cancelled || !result.path) {
+        return
+      }
+
+      if (isSource) {
+        setConfig((prev) => ({ ...prev, sourceDir: result.path }))
+      } else {
+        setConfig((prev) => ({ ...prev, targetDir: result.path }))
+      }
+    } catch (pickError) {
+      setError(
+        pickError instanceof Error ? pickError.message : "打开文件夹选择器失败"
+      )
+    } finally {
+      if (isSource) {
+        setPickingSourceDir(false)
+      } else {
+        setPickingTargetDir(false)
+      }
+    }
+  }
+
   return (
     <div className="mx-auto flex min-h-svh w-full max-w-6xl flex-col gap-6 p-4 md:p-8">
       <Card>
         <CardHeader className="gap-3">
           <CardTitle className="text-2xl">LiteSync 自动备份服务</CardTitle>
           <CardDescription>
-            本地服务已启动后，可在这里配置备份源目录、目标目录、调度频率与文件变更自动触发。
+            本地服务已启动后，可在这里配置源目录到目标目录的镜像同步规则（保持同名目录结构）。
           </CardDescription>
           <div className="flex flex-wrap items-center gap-2">
             <Badge variant={statusVariant(status)}>
-              {status.running ? "备份进行中" : "空闲"}
+              {status.running ? "同步进行中" : "空闲"}
             </Badge>
             {status.lastError ? (
               <Badge variant="destructive">最近执行失败</Badge>
@@ -239,40 +315,62 @@ export function App() {
       <div className="grid gap-6 lg:grid-cols-2">
         <Card>
           <CardHeader>
-            <CardTitle>备份配置</CardTitle>
+            <CardTitle>同步配置</CardTitle>
             <CardDescription>
-              目录路径建议使用绝对路径。保存后会立即写入本地配置文件，并自动应用。
+              源目录会镜像到目标目录下的同名文件夹中，并自动删除目标中的过期文件。
             </CardDescription>
           </CardHeader>
           <CardContent className="flex flex-col gap-4">
             <div className="grid gap-2">
               <Label htmlFor="sourceDir">源目录</Label>
-              <Input
-                id="sourceDir"
-                placeholder="例如: C:\\Users\\you\\Documents"
-                value={config.sourceDir}
-                onChange={(event) =>
-                  setConfig((prev) => ({
-                    ...prev,
-                    sourceDir: event.target.value,
-                  }))
-                }
-              />
+              <div className="flex flex-col gap-2 sm:flex-row">
+                <Input
+                  id="sourceDir"
+                  placeholder="例如: C:\\Users\\you\\Documents 或 \\\\server\\share"
+                  value={config.sourceDir}
+                  onChange={(event) =>
+                    setConfig((prev) => ({
+                      ...prev,
+                      sourceDir: event.target.value,
+                    }))
+                  }
+                />
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="sm:w-32"
+                  disabled={pickingSourceDir || loading}
+                  onClick={() => void pickFolder("source")}
+                >
+                  {pickingSourceDir ? "打开中..." : "选择文件夹"}
+                </Button>
+              </div>
             </div>
 
             <div className="grid gap-2">
               <Label htmlFor="targetDir">目标目录</Label>
-              <Input
-                id="targetDir"
-                placeholder="例如: D:\\Backups\\LiteSync"
-                value={config.targetDir}
-                onChange={(event) =>
-                  setConfig((prev) => ({
-                    ...prev,
-                    targetDir: event.target.value,
-                  }))
-                }
-              />
+              <div className="flex flex-col gap-2 sm:flex-row">
+                <Input
+                  id="targetDir"
+                  placeholder="例如: D:\\MirrorRoot 或 \\\\backup-nas\\share"
+                  value={config.targetDir}
+                  onChange={(event) =>
+                    setConfig((prev) => ({
+                      ...prev,
+                      targetDir: event.target.value,
+                    }))
+                  }
+                />
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="sm:w-32"
+                  disabled={pickingTargetDir || loading}
+                  onClick={() => void pickFolder("target")}
+                >
+                  {pickingTargetDir ? "打开中..." : "选择文件夹"}
+                </Button>
+              </div>
             </div>
 
             <div className="grid gap-2">
@@ -295,7 +393,7 @@ export function App() {
               <div className="grid gap-1">
                 <Label htmlFor="watchChanges">文件变化自动触发</Label>
                 <p className="text-xs text-muted-foreground">
-                  开启后，源目录文件有变化将自动触发备份（带防抖）。
+                  开启后，源目录文件变化会自动触发镜像同步（带防抖）。
                 </p>
               </div>
               <Switch
@@ -316,7 +414,7 @@ export function App() {
                 disabled={triggering || loading}
                 onClick={handleManualBackup}
               >
-                {triggering ? "触发中..." : "立即备份"}
+                {triggering ? "触发中..." : "立即同步"}
               </Button>
               <Button
                 variant="ghost"
@@ -335,6 +433,11 @@ export function App() {
             {error ? (
               <p className="text-sm text-red-600 dark:text-red-400">{error}</p>
             ) : null}
+            {offlineError ? (
+              <p className="text-sm text-amber-600 dark:text-amber-400">
+                {offlineError}
+              </p>
+            ) : null}
           </CardContent>
         </Card>
 
@@ -342,10 +445,31 @@ export function App() {
           <CardHeader>
             <CardTitle>任务状态</CardTitle>
             <CardDescription>
-              展示最近运行结果、调度状态和统计信息。
+              展示同步进度、最近运行结果、调度状态和统计信息。
             </CardDescription>
           </CardHeader>
           <CardContent className="grid gap-3 text-sm">
+            <div className="rounded-lg border p-3">
+              <div className="mb-2 flex items-center justify-between text-xs text-muted-foreground">
+                <span>同步进度</span>
+                <span>{status.progressPercent.toFixed(0)}%</span>
+              </div>
+              <Progress value={status.progressPercent} />
+              <div className="mt-2 grid grid-cols-2 gap-2 text-xs text-muted-foreground">
+                <p>
+                  文件进度: {status.processedFiles}/{status.totalFiles}
+                </p>
+                <p className="text-right">
+                  已复制: {status.filesCopied} | 已删除: {status.filesDeleted}
+                </p>
+              </div>
+              {status.currentFile ? (
+                <p className="mt-2 truncate text-xs text-muted-foreground">
+                  当前文件: {status.currentFile}
+                </p>
+              ) : null}
+            </div>
+
             <div className="grid grid-cols-2 gap-2 rounded-lg border p-3">
               <p className="text-muted-foreground">当前动作</p>
               <p className="text-right">{status.currentAction || "-"}</p>
@@ -364,6 +488,8 @@ export function App() {
               <p className="text-right">{status.successRuns}</p>
               <p className="text-muted-foreground">失败次数</p>
               <p className="text-right">{status.failedRuns}</p>
+              <p className="text-muted-foreground">累计复制字节</p>
+              <p className="text-right">{status.bytesCopied}</p>
             </div>
 
             <div className="grid grid-cols-2 gap-2 rounded-lg border p-3">

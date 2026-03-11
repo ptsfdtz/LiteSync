@@ -8,19 +8,42 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 )
 
-type Result struct {
-	Destination string    `json:"destination"`
-	FilesCopied int       `json:"filesCopied"`
-	BytesCopied int64     `json:"bytesCopied"`
-	StartedAt   time.Time `json:"startedAt"`
-	FinishedAt  time.Time `json:"finishedAt"`
+type Progress struct {
+	Phase          string
+	CurrentPath    string
+	TotalFiles     int
+	ProcessedFiles int
+	FilesCopied    int
+	FilesDeleted   int
+	BytesCopied    int64
+	Percent        float64
 }
 
-func Run(ctx context.Context, sourceDir string, targetDir string) (Result, error) {
+type ProgressFunc func(progress Progress)
+
+type Result struct {
+	Destination  string    `json:"destination"`
+	FilesCopied  int       `json:"filesCopied"`
+	FilesDeleted int       `json:"filesDeleted"`
+	BytesCopied  int64     `json:"bytesCopied"`
+	StartedAt    time.Time `json:"startedAt"`
+	FinishedAt   time.Time `json:"finishedAt"`
+}
+
+type sourceFile struct {
+	relativePath string
+	absolutePath string
+	size         int64
+	mode         fs.FileMode
+	modTime      time.Time
+}
+
+func Run(ctx context.Context, sourceDir string, targetDir string, onProgress ProgressFunc) (Result, error) {
 	startedAt := time.Now().UTC()
 
 	sourceAbs, err := filepath.Abs(sourceDir)
@@ -37,7 +60,18 @@ func Run(ctx context.Context, sourceDir string, targetDir string) (Result, error
 		return Result{}, errors.New("source and target directories must be different")
 	}
 
-	if isSubPath(sourceAbs, targetAbs) {
+	sourceName := filepath.Base(filepath.Clean(sourceAbs))
+	if sourceName == string(filepath.Separator) || sourceName == "." {
+		return Result{}, errors.New("source directory name is invalid")
+	}
+
+	destinationRoot := filepath.Join(targetAbs, sourceName)
+
+	if samePath(sourceAbs, destinationRoot) {
+		return Result{}, errors.New("target directory cannot mirror to the same source path")
+	}
+
+	if isSubPath(sourceAbs, destinationRoot) {
 		return Result{}, errors.New("target directory cannot be inside source directory")
 	}
 
@@ -53,15 +87,29 @@ func Run(ctx context.Context, sourceDir string, targetDir string) (Result, error
 		return Result{}, fmt.Errorf("create target directory: %w", err)
 	}
 
-	runDir := filepath.Join(targetAbs, "snapshot-"+startedAt.Format("20060102-150405"))
-	if err := os.MkdirAll(runDir, 0o755); err != nil {
-		return Result{}, fmt.Errorf("create snapshot directory: %w", err)
+	if err := os.MkdirAll(destinationRoot, 0o755); err != nil {
+		return Result{}, fmt.Errorf("create destination directory: %w", err)
 	}
 
 	result := Result{
-		Destination: runDir,
+		Destination: destinationRoot,
 		StartedAt:   startedAt,
 	}
+
+	sourceFiles := make([]sourceFile, 0, 256)
+	sourceEntries := make(map[string]struct{}, 512)
+
+	report := func(progress Progress) {
+		if onProgress == nil {
+			return
+		}
+		onProgress(progress)
+	}
+
+	report(Progress{
+		Phase:       "scanning",
+		CurrentPath: sourceAbs,
+	})
 
 	err = filepath.WalkDir(sourceAbs, func(currentPath string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
@@ -81,10 +129,12 @@ func Run(ctx context.Context, sourceDir string, targetDir string) (Result, error
 		if err != nil {
 			return fmt.Errorf("build relative path: %w", err)
 		}
-		destinationPath := filepath.Join(runDir, relativePath)
+		normalizedKey := normalizeRelativePath(relativePath)
+		sourceEntries[normalizedKey] = struct{}{}
 
 		if entry.IsDir() {
-			return os.MkdirAll(destinationPath, 0o755)
+			destinationPath := filepath.Join(destinationRoot, relativePath)
+			return ensureDir(destinationPath)
 		}
 
 		info, err := entry.Info()
@@ -96,13 +146,112 @@ func Run(ctx context.Context, sourceDir string, targetDir string) (Result, error
 			return nil
 		}
 
-		bytesCopied, err := copyFile(currentPath, destinationPath, info.Mode())
+		sourceFiles = append(sourceFiles, sourceFile{
+			relativePath: relativePath,
+			absolutePath: currentPath,
+			size:         info.Size(),
+			mode:         info.Mode(),
+			modTime:      info.ModTime(),
+		})
+		return nil
+	})
+	if err != nil {
+		return Result{}, err
+	}
+
+	totalFiles := len(sourceFiles)
+	if totalFiles == 0 {
+		report(Progress{
+			Phase:       "deleting",
+			CurrentPath: destinationRoot,
+			TotalFiles:  0,
+			Percent:     100,
+		})
+	} else {
+		report(Progress{
+			Phase:      "copying",
+			TotalFiles: totalFiles,
+			Percent:    0,
+		})
+	}
+
+	for index, file := range sourceFiles {
+		select {
+		case <-ctx.Done():
+			return Result{}, ctx.Err()
+		default:
+		}
+
+		destinationPath := filepath.Join(destinationRoot, file.relativePath)
+		copied, bytesCopied, err := syncFile(file, destinationPath)
+		if err != nil {
+			return Result{}, err
+		}
+
+		if copied {
+			result.FilesCopied++
+			result.BytesCopied += bytesCopied
+		}
+
+		processed := index + 1
+		report(Progress{
+			Phase:          "copying",
+			CurrentPath:    file.relativePath,
+			TotalFiles:     totalFiles,
+			ProcessedFiles: processed,
+			FilesCopied:    result.FilesCopied,
+			FilesDeleted:   result.FilesDeleted,
+			BytesCopied:    result.BytesCopied,
+			Percent:        percent(processed, totalFiles),
+		})
+	}
+
+	report(Progress{
+		Phase:          "deleting",
+		CurrentPath:    destinationRoot,
+		TotalFiles:     totalFiles,
+		ProcessedFiles: totalFiles,
+		FilesCopied:    result.FilesCopied,
+		FilesDeleted:   result.FilesDeleted,
+		BytesCopied:    result.BytesCopied,
+		Percent:        100,
+	})
+
+	err = filepath.WalkDir(destinationRoot, func(currentPath string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if currentPath == destinationRoot {
+			return nil
+		}
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
+		relativePath, err := filepath.Rel(destinationRoot, currentPath)
 		if err != nil {
 			return err
 		}
 
-		result.FilesCopied++
-		result.BytesCopied += bytesCopied
+		if _, exists := sourceEntries[normalizeRelativePath(relativePath)]; exists {
+			return nil
+		}
+
+		if entry.IsDir() {
+			if err := os.RemoveAll(currentPath); err != nil {
+				return err
+			}
+			result.FilesDeleted++
+			return filepath.SkipDir
+		}
+
+		if err := os.Remove(currentPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		result.FilesDeleted++
 		return nil
 	})
 	if err != nil {
@@ -110,7 +259,58 @@ func Run(ctx context.Context, sourceDir string, targetDir string) (Result, error
 	}
 
 	result.FinishedAt = time.Now().UTC()
+	report(Progress{
+		Phase:          "done",
+		CurrentPath:    destinationRoot,
+		TotalFiles:     totalFiles,
+		ProcessedFiles: totalFiles,
+		FilesCopied:    result.FilesCopied,
+		FilesDeleted:   result.FilesDeleted,
+		BytesCopied:    result.BytesCopied,
+		Percent:        100,
+	})
 	return result, nil
+}
+
+func syncFile(source sourceFile, destinationPath string) (bool, int64, error) {
+	shouldCopy := false
+
+	destinationInfo, err := os.Stat(destinationPath)
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			return false, 0, err
+		}
+		shouldCopy = true
+	} else {
+		if !destinationInfo.Mode().IsRegular() {
+			if removeErr := os.RemoveAll(destinationPath); removeErr != nil {
+				return false, 0, removeErr
+			}
+			shouldCopy = true
+		} else if destinationInfo.Size() != source.size {
+			shouldCopy = true
+		} else {
+			modDiff := source.modTime.Sub(destinationInfo.ModTime())
+			if modDiff < 0 {
+				modDiff = -modDiff
+			}
+			if modDiff > time.Second {
+				shouldCopy = true
+			}
+		}
+	}
+
+	if !shouldCopy {
+		return false, 0, nil
+	}
+
+	bytesCopied, err := copyFile(source.absolutePath, destinationPath, source.mode)
+	if err != nil {
+		return false, 0, err
+	}
+
+	_ = os.Chtimes(destinationPath, time.Now(), source.modTime)
+	return true, bytesCopied, nil
 }
 
 func copyFile(sourcePath string, destinationPath string, mode fs.FileMode) (int64, error) {
@@ -120,7 +320,7 @@ func copyFile(sourcePath string, destinationPath string, mode fs.FileMode) (int6
 	}
 	defer sourceFile.Close()
 
-	if err := os.MkdirAll(filepath.Dir(destinationPath), 0o755); err != nil {
+	if err := ensureDir(filepath.Dir(destinationPath)); err != nil {
 		return 0, err
 	}
 
@@ -133,8 +333,52 @@ func copyFile(sourcePath string, destinationPath string, mode fs.FileMode) (int6
 	return io.Copy(destinationFile, sourceFile)
 }
 
+func percent(processed int, total int) float64 {
+	if total <= 0 {
+		return 100
+	}
+	return float64(processed) * 100 / float64(total)
+}
+
 func isSubPath(basePath string, candidatePath string) bool {
-	baseWithSeparator := basePath + string(filepath.Separator)
-	candidateWithSeparator := candidatePath + string(filepath.Separator)
+	baseWithSeparator := normalizeForCompare(filepath.Clean(basePath)) + string(filepath.Separator)
+	candidateWithSeparator := normalizeForCompare(filepath.Clean(candidatePath)) + string(filepath.Separator)
 	return strings.HasPrefix(candidateWithSeparator, baseWithSeparator)
+}
+
+func samePath(pathA string, pathB string) bool {
+	return normalizeForCompare(pathA) == normalizeForCompare(pathB)
+}
+
+func normalizeRelativePath(path string) string {
+	cleaned := filepath.Clean(path)
+	if runtime.GOOS == "windows" {
+		return strings.ToLower(cleaned)
+	}
+	return cleaned
+}
+
+func normalizeForCompare(path string) string {
+	cleaned := filepath.Clean(path)
+	if runtime.GOOS == "windows" {
+		return strings.ToLower(cleaned)
+	}
+	return cleaned
+}
+
+func ensureDir(path string) error {
+	info, err := os.Stat(path)
+	if err == nil {
+		if info.IsDir() {
+			return nil
+		}
+		if removeErr := os.Remove(path); removeErr != nil {
+			return removeErr
+		}
+	}
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+
+	return os.MkdirAll(path, 0o755)
 }

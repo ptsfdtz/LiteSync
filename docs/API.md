@@ -105,7 +105,7 @@ Base URL: `/api`
 }
 ```
 
-## 6. 手动触发备份
+## 6. 手动触发同步
 
 ### `POST /backup`
 
@@ -125,3 +125,44 @@ Base URL: `/api`
 }
 ```
 
+## 7. 进度字段（`GET /status`）
+
+`status` 中新增与同步进度相关字段：
+
+- `progressPercent`：进度百分比（0-100）
+- `totalFiles`：本轮待处理总文件数
+- `processedFiles`：本轮已处理文件数
+- `currentFile`：当前处理文件（相对路径）
+- `filesCopied`：本轮已复制文件数
+- `filesDeleted`：本轮已删除文件数
+- `bytesCopied`：本轮累计复制字节数
+
+## 8. 打开系统文件夹选择器（Windows）
+
+### `POST /folder-picker`
+
+请求体（可选）：
+
+```json
+{
+  "initialPath": "C:\\Users\\you\\Documents"
+}
+```
+
+响应示例（选择成功）：
+
+```json
+{
+  "cancelled": false,
+  "path": "C:\\Users\\you\\Documents"
+}
+```
+
+响应示例（用户取消）：
+
+```json
+{
+  "cancelled": true,
+  "path": ""
+}
+```
