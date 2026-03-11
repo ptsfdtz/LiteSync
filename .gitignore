@@ -1,14 +1,22 @@
-bin/
-dist/
-build/
-coverage.out
-*.log
-
-# Runtime data
-*.db
-*.tmp
-.cache/
-
-# IDE
+# OS / editor
+.DS_Store
+Thumbs.db
 .idea/
 .vscode/
+
+# Frontend
+client/node_modules/
+client/**/node_modules/
+client/.turbo/
+client/**/dist/
+
+# Go
+server/bin/
+server/dist/
+server/coverage.out
+
+# Runtime data
+data/
+backup-source/
+backup-target/
+release/

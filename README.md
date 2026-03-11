@@ -1,179 +1,117 @@
 # LiteSync
 
-LiteSync 是一个跨平台桌面备份工具，目标是在最小打扰下将用户选定的源目录持续同步到目标目录。
+LiteSync 是一个跨平台的本地自动备份服务（MVP），采用前后端分离架构：
 
-> 当前仓库已完成基础可用实现，并保留持续演进空间（UI 托盘与安装分发等）。
+- 后端：Go，负责备份执行、调度、文件监听、日志、配置持久化
+- 前端：React + `shadcn/ui`，提供 Web 管理界面
+- 运行方式：支持本地二进制运行与 Docker 运行
+- 目标平台：Windows / Linux / macOS
 
-## 项目简介
+## 目录结构
 
-- 一句话价值主张：在 Windows/macOS/Linux 上，为个人与小团队提供“低打扰、可恢复、可观测”的目录自动备份体验。
+- `client/` Web 前端（全部基于 `@workspace/ui` 组件）
+- `server/` Go 本地服务和 API
+- `docs/` 架构与接口文档
 
-## 技术选型（为何 Go 而非 Rust）
+## MVP 功能覆盖
 
-- 结论：当前阶段主技术栈确定为 `Go + Fyne`。
-- 选型理由：
-  - 开发效率：Go 对并发任务（监听、队列、同步执行）表达直接，MVP 落地速度更快。
-  - 跨平台桌面：Fyne 与 Go 的组合可覆盖 Windows/macOS/Linux，工程链路清晰。
-  - 分发与维护：Go 单二进制发布成本低，便于快速验证和迭代。
-  - 团队协作：对于“先可用后优化”的备份产品，Go 的学习与维护曲线更平衡。
-- Rust 保留策略（规划中）：
-  - 若未来出现明确性能瓶颈，可将同步核心局部模块化为 Rust 实现，通过进程/接口集成。
+- 启动后可通过浏览器访问管理界面
+- 配置源目录 / 目标目录 / 备份频率 / 文件变化自动触发
+- 配置持久化保存（重启后仍生效）
+- 支持手动触发备份 + 定时备份 + 文件变化触发备份
+- 展示任务状态、最近日志和错误信息
+- 备份结果写入目标目录的时间戳快照目录
 
-## 核心特性
+## 本地运行（推荐开发与验证）
 
-- 可配置源目录与目标目录
-- 首次全量同步 + 事件驱动增量同步
-- 文件变化监听自动触发同步
-- 开机自启动、后台运行、最小化打扰
-- 异常可恢复：失败重试、任务状态可追踪
-- 日志分级与问题排查支持
+### 1) 启动后端 API（Go）
 
-## 适用平台与技术栈
+```powershell
+cd server
+go run ./cmd/litesync-server
+```
 
-- 平台：
-  - Windows 10/11
-  - macOS 12+（基础路径已实现）
-  - Linux（主流桌面发行版，基础路径已实现）
-- 技术栈：
-  - `Go`：业务逻辑、并发调度、文件同步引擎
-  - `Fyne`：跨平台桌面 GUI 控制面板（已接入基础版本）
-  - `YAML`：本地配置文件格式
+默认后端地址：`http://localhost:8080`  
+说明：后端会优先使用内嵌 Web 资源；如果你设置了 `LITESYNC_WEB_DIR`，则会优先读取该目录。
 
-## 计划中的关键能力
+### 2) 启动前端（开发模式）
 
-- 自动备份：
-  - 新建任务后执行首次全量同步
-  - 监听到变更后执行增量同步
-- 文件变更监听：
-  - 事件驱动（Watcher）+ 周期校验（Reconcile）双机制
-- 静默启动：
-  - 支持开机自启动与后台托盘运行
-- 可恢复：
-  - 中断后重启恢复任务状态（规划中）
-  - 冲突文件保底策略（默认建议：先备份后覆盖）
+```powershell
+cd client
+pnpm install
+pnpm --filter web dev
+```
 
-## 快速开始
+默认前端地址：`http://localhost:5173`  
+开发模式下已配置 `/api` 代理到 `http://localhost:8080`。
 
-> 当前仓库已完成可运行实现，可直接进行同步与验证。
+### 3) 单服务方式（后端直接托管前端静态页面）
 
-### 1) 环境准备
+```powershell
+cd client
+pnpm --filter web build
 
-- Go `1.22+`（建议）
-- 支持平台：Windows/macOS/Linux
-- 运行 GUI 需要 `CGO_ENABLED=1`
-- Windows 下若缺少 `gcc`，请先安装 MinGW-w64 并确保 `gcc` 在 `PATH` 中
+cd ../server
+$env:LITESYNC_WEB_DIR="../client/apps/web/dist"
+go run ./cmd/litesync-server
+```
 
-### 2) 初始化默认配置
+然后访问：`http://localhost:8080`
+
+## 打包为单个可运行程序（内嵌 Web UI）
+
+### Windows
+
+```powershell
+.\scripts\build-standalone.ps1
+```
+
+产物：`release/litesync.exe`  
+该 exe 已内嵌前端页面，可直接运行，且默认不会弹出终端窗口。
+
+如需调试控制台输出，可构建控制台版本：
+
+```powershell
+.\scripts\build-standalone.ps1 -WithConsole
+```
+
+### Linux / macOS
 
 ```bash
-go run ./cmd/litesync -init-config
+./scripts/build-standalone.sh
 ```
 
-### 3) 构建
+产物：`release/litesync`
 
-```bash
-go build -o bin/litesync ./cmd/litesync
-go build -o bin/litesync-gui ./cmd/litesync-gui
+## Docker 运行
+
+在仓库根目录执行：
+
+```powershell
+docker compose up --build
 ```
 
-### 4) 运行
+访问地址：
 
-CLI 后台模式（无窗口）：
+- 前端界面：`http://localhost:5173`
+- 后端 API：`http://localhost:8080/api`
 
-```bash
-go run ./cmd/litesync
-```
+配置数据默认持久化在根目录 `./data`（由 `docker-compose.yml` 挂载）。
 
-GUI 模式（有窗口）：
+## 关键环境变量
 
-```bash
-# Windows PowerShell
-$env:CGO_ENABLED='1'
-go run ./cmd/litesync-gui
-```
+- `LITESYNC_HTTP_ADDR`：后端监听地址，默认 `:8080`
+- `LITESYNC_DATA_DIR`：配置数据目录，默认用户配置目录下 `LiteSync`
+- `LITESYNC_WEB_DIR`：可选，覆盖内嵌资源，改为读取外部静态文件目录
+- `VITE_API_BASE_URL`：前端 API 基地址（构建时），默认 `/api`
 
-说明：
+## 接口概览
 
-- 若 `jobs[].enabled=true` 且 `jobs[].strategy.initial_sync=full`，程序启动后会执行一次首次全量同步（基础版本）。
-- 已支持事件驱动增量同步，调度器会按 `debounce_ms` 聚合后执行。
-- CLI 运行中可在控制台输入命令：
-  - `sync`：触发全部任务立即同步
-  - `status`：输出任务汇总统计与错误码聚合
-  - `report`：导出最近运行报告到 `state_dir/reports/`
-  - `open`：预留 GUI 打开动作（当前仅确认命令）
-  - `exit`：安全退出并保存状态快照
-- GUI 提供目录选择、保存配置、启动/停止同步、立即同步、导出报告、打开日志目录。
+- `GET /api/health` 健康检查
+- `GET /api/config` 获取配置
+- `PUT /api/config` 保存配置
+- `GET /api/status` 获取运行状态
+- `GET /api/logs?limit=120` 获取最近日志
+- `POST /api/backup` 手动触发备份
 
-### 5) 目录说明（当前）
-
-```text
-LiteSync/
-  AGENTS.md
-  README.md
-  configs/
-    config.example.yaml
-  docs/
-    ARCHITECTURE.md
-    API.md
-    CONFIG.md
-    FAQ.md
-    ROADMAP.md
-    TODO.md
-  cmd/
-    litesync/         # CLI 后台入口
-    litesync-gui/     # GUI 入口（Fyne）
-  internal/
-    backup/           # 同步与冲突处理
-    watcher/          # 文件监听
-    scheduler/        # 事件/定时调度
-    config/           # 配置管理
-    startup/          # 开机自启
-    logx/             # 日志模块
-```
-
-## 文档导航
-
-- [Agent 启动文档（AI 专用）](AGENTS.md)
-- [架构设计](docs/ARCHITECTURE.md)
-- [内部接口约定](docs/API.md)
-- [配置规范](docs/CONFIG.md)
-- [开发路线图](docs/ROADMAP.md)
-- [任务清单](docs/TODO.md)
-- [常见问题](docs/FAQ.md)
-- [安装与升级](docs/INSTALL.md)
-- [性能与压测](docs/PERFORMANCE.md)
-
-### AI 开发入口
-
-- 若在任意设备上使用 Agent 工具开始开发，请先阅读 `AGENTS.md`，该文件定义了统一术语、启动顺序、实现优先级与文档同步规则。
-
-## 开发里程碑概览
-
-| 阶段 | 目标 | 核心交付 |
-| --- | --- | --- |
-| MVP | 可用版本 | 单任务目录同步、监听触发、基础日志、自启动开关 |
-| Beta | 稳定性版本 | 多任务、冲突策略、恢复能力、跨平台验证 |
-| v1.0 | 发布版本 | 安装与升级体验、性能优化、完善文档与发布流程 |
-
-详细计划见 [docs/ROADMAP.md](docs/ROADMAP.md)。
-
-## 风险与边界说明
-
-- 跨平台权限差异：
-  - 系统目录、外接盘、网络挂载目录可能存在权限或事件丢失问题。
-- 文件监听限制：
-  - 文件系统事件可能丢失、合并或延迟，必须配合周期校验机制。
-- 占用文件与原子写入：
-  - 正在被其他进程写入的文件可能无法立即同步，需要重试与退避。
-- 非目标场景边界（当前）：
-  - 不提供云端同步
-  - 不做双向同步（以源目录为准的一方向备份）
-  - 不保证跨机器的实时一致性
-
-## 状态声明
-
-- 当前状态：骨架已初始化，核心业务能力开发中
-- 代码实现状态：
-  - 已完成：项目结构、配置加载与校验骨架、首次全量同步基础能力、真实文件监听基础能力、事件调度防抖与串行执行基础能力、增量同步基础能力、冲突策略基础能力、软删除回收目录基础能力、日志落盘与错误分级、自启动基础能力、周期校验基础能力、安全退出与状态落盘、后台控制命令通道、多任务同步基础能力、恢复与重放基础能力、运行统计与报告导出基础能力、CLI 启动流程、基础 GUI 控制面板
-  - 未完成：托盘可视化交互、安装升级体验、性能压测与体验细化等
-- 约定有效性：本文档与 `docs/` 下设计文档保持一致，后续变更需同步更新。
+详细说明见 [docs/API.md](./docs/API.md)。

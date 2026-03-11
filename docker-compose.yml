@@ -1,0 +1,24 @@
+services:
+  server:
+    build:
+      context: ./server
+    environment:
+      LITESYNC_HTTP_ADDR: ":8080"
+      LITESYNC_DATA_DIR: /data
+    volumes:
+      - ./data:/data
+    ports:
+      - "8080:8080"
+    restart: unless-stopped
+
+  web:
+    build:
+      context: ./client
+      args:
+        VITE_API_BASE_URL: /api
+    depends_on:
+      - server
+    ports:
+      - "5173:80"
+    restart: unless-stopped
+
