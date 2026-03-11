@@ -1,21 +1,21 @@
-# shadcn/ui monorepo template
+# LiteSync Client
 
-This is a Vite monorepo template with shadcn/ui.
+Web 管理界面，使用 React + Vite，并统一通过 `@workspace/ui`（shadcn/ui 风格组件）构建界面。
 
-## Adding components
-
-To add components to your app, run the following command at the root of your `web` app:
+## 开发启动
 
 ```bash
-pnpm dlx shadcn@latest add button -c apps/web
+pnpm install
+pnpm --filter web dev
 ```
 
-This will place the ui components in the `packages/ui/src/components` directory.
+默认地址：`http://localhost:5173`  
+`/api` 会自动代理到 `http://localhost:8080`。
 
-## Using components
+## 生产构建
 
-To use the components in your app, import them from the `ui` package.
-
-```tsx
-import { Button } from "@workspace/ui/components/button";
+```bash
+pnpm --filter web build
 ```
+
+构建产物在 `apps/web/dist`。

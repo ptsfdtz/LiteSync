@@ -1,0 +1,21 @@
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Frontend
+client/node_modules/
+client/**/node_modules/
+client/.turbo/
+client/**/dist/
+
+# Go
+server/bin/
+server/coverage.out
+
+# Runtime data
+data/
+backup-source/
+backup-target/
+
