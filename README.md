@@ -31,7 +31,8 @@ cd server
 go run ./cmd/litesync-server
 ```
 
-默认后端地址：`http://localhost:8080`
+默认后端地址：`http://localhost:8080`  
+说明：后端会优先使用内嵌 Web 资源；如果你设置了 `LITESYNC_WEB_DIR`，则会优先读取该目录。
 
 ### 2) 启动前端（开发模式）
 
@@ -57,6 +58,31 @@ go run ./cmd/litesync-server
 
 然后访问：`http://localhost:8080`
 
+## 打包为单个可运行程序（内嵌 Web UI）
+
+### Windows
+
+```powershell
+.\scripts\build-standalone.ps1
+```
+
+产物：`release/litesync.exe`  
+该 exe 已内嵌前端页面，可直接运行，且默认不会弹出终端窗口。
+
+如需调试控制台输出，可构建控制台版本：
+
+```powershell
+.\scripts\build-standalone.ps1 -WithConsole
+```
+
+### Linux / macOS
+
+```bash
+./scripts/build-standalone.sh
+```
+
+产物：`release/litesync`
+
 ## Docker 运行
 
 在仓库根目录执行：
@@ -76,7 +102,7 @@ docker compose up --build
 
 - `LITESYNC_HTTP_ADDR`：后端监听地址，默认 `:8080`
 - `LITESYNC_DATA_DIR`：配置数据目录，默认用户配置目录下 `LiteSync`
-- `LITESYNC_WEB_DIR`：后端托管前端静态文件目录，默认 `./web`
+- `LITESYNC_WEB_DIR`：可选，覆盖内嵌资源，改为读取外部静态文件目录
 - `VITE_API_BASE_URL`：前端 API 基地址（构建时），默认 `/api`
 
 ## 接口概览

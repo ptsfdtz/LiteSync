@@ -13,4 +13,3 @@ var DistFiles embed.FS
 func DistFS() (fs.FS, error) {
 	return fs.Sub(DistFiles, "dist")
 }
-

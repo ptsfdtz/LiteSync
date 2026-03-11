@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"io/fs"
 	"log"
 	"net/http"
 	"os"
@@ -15,11 +16,12 @@ import (
 
 	"litesync/server/internal/httpapi"
 	"litesync/server/internal/service"
+	"litesync/server/internal/webui"
 )
 
 func main() {
 	addr := envOrDefault("LITESYNC_HTTP_ADDR", ":8080")
-	webDir := envOrDefault("LITESYNC_WEB_DIR", "./web")
+	webDir := strings.TrimSpace(os.Getenv("LITESYNC_WEB_DIR"))
 
 	dataDir, err := resolveDataDir()
 	if err != nil {
@@ -33,7 +35,7 @@ func main() {
 	defer svc.Shutdown()
 
 	apiHandler := httpapi.New(svc)
-	rootHandler := buildRootHandler(apiHandler, webDir)
+	rootHandler, webSource := buildRootHandler(apiHandler, webDir)
 
 	server := &http.Server{
 		Addr:              addr,
@@ -44,7 +46,7 @@ func main() {
 	go func() {
 		log.Printf("LiteSync server started on %s", addr)
 		log.Printf("Config data directory: %s", dataDir)
-		log.Printf("Web assets directory: %s", webDir)
+		log.Printf("Web UI source: %s", webSource)
 		if listenErr := server.ListenAndServe(); listenErr != nil && !errors.Is(listenErr, http.ErrServerClosed) {
 			log.Fatalf("server stopped unexpectedly: %v", listenErr)
 		}
@@ -74,24 +76,34 @@ func resolveDataDir() (string, error) {
 	return filepath.Join(userConfigDir, "LiteSync"), nil
 }
 
-func buildRootHandler(apiHandler http.Handler, webDir string) http.Handler {
-	indexFilePath := filepath.Join(webDir, "index.html")
-	indexExists := fileExists(indexFilePath)
-
-	if !indexExists {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if isAPIRequest(r.URL.Path) {
-				apiHandler.ServeHTTP(w, r)
-				return
-			}
-
-			w.Header().Set("Content-Type", "text/html; charset=utf-8")
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte(`<html><body style="font-family:sans-serif;padding:24px"><h2>LiteSync API is running</h2><p>Web UI assets not found. Build the client and set <code>LITESYNC_WEB_DIR</code>.</p></body></html>`))
-		})
+func buildRootHandler(apiHandler http.Handler, webDir string) (http.Handler, string) {
+	if webDir != "" {
+		diskFS := os.DirFS(webDir)
+		if hasFile(diskFS, "index.html") {
+			return buildSPAHandler(apiHandler, diskFS), "filesystem: " + webDir
+		}
+		log.Printf("LITESYNC_WEB_DIR is set but index.html not found: %s", webDir)
 	}
 
-	fileServer := http.FileServer(http.Dir(webDir))
+	embeddedFS, err := webui.DistFS()
+	if err == nil && hasFile(embeddedFS, "index.html") {
+		return buildSPAHandler(apiHandler, embeddedFS), "embedded assets"
+	}
+
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if isAPIRequest(r.URL.Path) {
+			apiHandler.ServeHTTP(w, r)
+			return
+		}
+
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`<html><body style="font-family:sans-serif;padding:24px"><h2>LiteSync API is running</h2><p>Web UI assets are missing. Build client and embed assets, or set <code>LITESYNC_WEB_DIR</code>.</p></body></html>`))
+	}), "none"
+}
+
+func buildSPAHandler(apiHandler http.Handler, staticFS fs.FS) http.Handler {
+	fileServer := http.FileServer(http.FS(staticFS))
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if isAPIRequest(r.URL.Path) {
@@ -105,17 +117,17 @@ func buildRootHandler(apiHandler http.Handler, webDir string) http.Handler {
 		}
 
 		if cleanPath == "/" {
-			http.ServeFile(w, r, indexFilePath)
+			http.ServeFileFS(w, r, staticFS, "index.html")
 			return
 		}
 
-		staticFilePath := filepath.Join(webDir, filepath.FromSlash(strings.TrimPrefix(cleanPath, "/")))
-		if info, err := os.Stat(staticFilePath); err == nil && !info.IsDir() {
+		assetPath := strings.TrimPrefix(cleanPath, "/")
+		if hasFile(staticFS, assetPath) {
 			fileServer.ServeHTTP(w, r)
 			return
 		}
 
-		http.ServeFile(w, r, indexFilePath)
+		http.ServeFileFS(w, r, staticFS, "index.html")
 	})
 }
 
@@ -123,8 +135,8 @@ func isAPIRequest(requestPath string) bool {
 	return requestPath == "/api" || strings.HasPrefix(requestPath, "/api/")
 }
 
-func fileExists(path string) bool {
-	info, err := os.Stat(path)
+func hasFile(fileSystem fs.FS, name string) bool {
+	info, err := fs.Stat(fileSystem, name)
 	if err != nil {
 		return false
 	}

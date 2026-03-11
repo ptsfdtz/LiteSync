@@ -12,10 +12,11 @@ client/**/dist/
 
 # Go
 server/bin/
+server/dist/
 server/coverage.out
 
 # Runtime data
 data/
 backup-source/
 backup-target/
-
+release/
