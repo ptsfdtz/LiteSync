@@ -93,9 +93,10 @@ jobs:
           cache-dependency-path: client/pnpm-lock.yaml
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          version: 9.0.6
+        shell: pwsh
+        run: |
+          corepack enable
+          corepack prepare pnpm@9.0.6 --activate
 
       - name: Setup Go
         uses: actions/setup-go@v5
