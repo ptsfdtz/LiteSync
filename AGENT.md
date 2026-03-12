@@ -93,7 +93,7 @@ docker compose up --build
 
 访问地址：
 
-- 前端界面：`http://localhost:5173`
+- 管理界面（同一服务内嵌）：`http://localhost:8080`
 - 后端 API：`http://localhost:8080/api`
 
 配置数据默认持久化在根目录 `./data`（由 `docker-compose.yml` 挂载）。

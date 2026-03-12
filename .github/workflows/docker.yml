@@ -47,19 +47,6 @@ jobs:
   build-and-push:
     needs: metadata
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - image_suffix: server
-            context: ./server
-            dockerfile: ./server/Dockerfile
-            build_args: ""
-          - image_suffix: web
-            context: ./client
-            dockerfile: ./client/Dockerfile
-            build_args: |
-              VITE_API_BASE_URL=/api
     env:
       APP_NAME: litesync
 
@@ -85,7 +72,7 @@ jobs:
         shell: bash
         run: |
           owner=$(echo "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')
-          image="ghcr.io/${owner}/${{ env.APP_NAME }}-${{ matrix.image_suffix }}"
+          image="ghcr.io/${owner}/${{ env.APP_NAME }}"
           version="${{ needs.metadata.outputs.version }}"
           clean_version="${version#v}"
 
@@ -107,9 +94,10 @@ jobs:
       - name: Build and push image
         uses: docker/build-push-action@v6
         with:
-          context: ${{ matrix.context }}
-          file: ${{ matrix.dockerfile }}
+          context: .
+          file: ./Dockerfile
           push: true
           platforms: linux/amd64,linux/arm64
           tags: ${{ steps.tags.outputs.tags }}
-          build-args: ${{ matrix.build_args }}
+          build-args: |
+            VITE_API_BASE_URL=/api
