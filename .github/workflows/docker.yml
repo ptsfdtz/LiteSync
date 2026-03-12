@@ -1,0 +1,115 @@
+name: Docker
+
+on:
+  push:
+    branches:
+      - release
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: docker-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  metadata:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      prerelease: ${{ steps.meta.outputs.prerelease }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve image metadata
+        id: meta
+        shell: bash
+        run: |
+          base_version=$(grep -m1 '"version"' client/package.json | sed -E 's/.*"version": "([^"]+)".*/\1/')
+          short_sha="${GITHUB_SHA::7}"
+
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            version="${GITHUB_REF_NAME}"
+            prerelease="false"
+          else
+            stamp=$(date -u +%Y%m%d%H%M)
+            version="${base_version}-beta.${stamp}-${short_sha}"
+            prerelease="true"
+          fi
+
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+          echo "prerelease=${prerelease}" >> "${GITHUB_OUTPUT}"
+
+  build-and-push:
+    needs: metadata
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image_suffix: server
+            context: ./server
+            dockerfile: ./server/Dockerfile
+            build_args: ""
+          - image_suffix: web
+            context: ./client
+            dockerfile: ./client/Dockerfile
+            build_args: |
+              VITE_API_BASE_URL=/api
+    env:
+      APP_NAME: litesync
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Resolve image tags
+        id: tags
+        shell: bash
+        run: |
+          owner=$(echo "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')
+          image="ghcr.io/${owner}/${{ env.APP_NAME }}-${{ matrix.image_suffix }}"
+          version="${{ needs.metadata.outputs.version }}"
+          clean_version="${version#v}"
+
+          tags="${image}:${version}"
+          if [[ "${{ needs.metadata.outputs.prerelease }}" == "true" ]]; then
+            tags="${tags}"$'\n'"${image}:beta"
+          else
+            tags="${tags}"$'\n'"${image}:${clean_version}"
+            tags="${tags}"$'\n'"${image}:latest"
+          fi
+
+          echo "image=${image}" >> "${GITHUB_OUTPUT}"
+          {
+            echo "tags<<EOF"
+            echo "${tags}"
+            echo "EOF"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Build and push image
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: ${{ steps.tags.outputs.tags }}
+          build-args: ${{ matrix.build_args }}
